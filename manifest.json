@@ -1,0 +1,43 @@
+{
+  "version": "1.8.3",
+  "boards": [
+    {
+      "id": "ESP32-S3-devKitv1",
+      "name": "Espressif ESP32-S3-DevKitC-1 N16R8",
+      "chip": "ESP32-S3",
+      "factory_bin": "firmware/ESP32-S3-devKitv1_factory.bin",
+      "factory_offset": "0x0",
+      "flash_size": "16MB",
+      "notes": "Native USB CDC. Use the USB port (not UART). Hold BOOT during reset if it doesn't enter bootloader mode."
+    },
+    {
+      "id": "ESP32-2432S028R",
+      "name": "Sunton ESP32-2432S028R (CYD 2.8\")",
+      "chip": "ESP32",
+      "factory_bin": "firmware/ESP32-2432S028R_factory.bin",
+      "factory_offset": "0x0",
+      "flash_size": "4MB",
+      "notes": "ILI9341 320x240, XPT2046 resistive touch, TFT_BL=GPIO21."
+    },
+    {
+      "id": "ESP32-2432S024",
+      "name": "Sunton ESP32-2432S024 (CYD 2.4\")",
+      "chip": "ESP32",
+      "factory_bin": "firmware/ESP32-2432S024_factory.bin",
+      "factory_offset": "0x0",
+      "flash_size": "4MB",
+      "notes": "ILI9341_2 driver, TFT_BL=GPIO27, capacitive touch (CST816S, not yet supported)."
+    },
+    {
+      "id": "esp32cam",
+      "name": "AI-Thinker ESP32-CAM",
+      "chip": "ESP32",
+      "factory_bin": "firmware/esp32cam_factory.bin",
+      "factory_offset": "0x0",
+      "flash_size": "4MB",
+      "flash_baud": 230400,
+      "compress": false,
+      "notes": "Requires ESP32-CAM-MB programmer (or external FTDI + manual GPIO0→GND). KNOWN ISSUE: web flashing typically fails with 'No serial data received' because esptool-js (Chrome WebSerial) has a ~3s timeout for the flash_begin ACK, but the stub needs 5–10s to erase 1.3 MB of flash sectors. PIO esptool works (longer timeout + retry). Workaround: use `pio run -e esp32cam --target upload --upload-port COMx` from command line."
+    }
+  ]
+}

@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NerdMiner Web Flasher — AxeHub Edition</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    max-width: 800px; margin: 0 auto; padding: 1.5rem;
+    background: #0d1117; color: #c9d1d9;
+  }
+  h1 { color: #f0c000; margin-top: 0; }
+  .card {
+    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+    padding: 1rem; margin-bottom: 1rem;
+  }
+  label { display: block; font-weight: 600; margin-bottom: 0.4rem; }
+  select, button {
+    font-size: 1rem; padding: 0.6rem 1rem; border-radius: 6px;
+    border: 1px solid #30363d; background: #21262d; color: #c9d1d9;
+  }
+  select { width: 100%; margin-bottom: 0.6rem; }
+  button {
+    cursor: pointer; background: #238636; color: white; border: 0;
+    margin-right: 0.4rem; font-weight: 600;
+  }
+  button:hover:not(:disabled) { background: #2ea043; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.secondary { background: #30363d; }
+  button.secondary:hover:not(:disabled) { background: #484f58; }
+  button.danger { background: #da3633; }
+  button.danger:hover:not(:disabled) { background: #f85149; }
+  .notes { font-size: 0.9rem; color: #8b949e; margin-top: 0.4rem; }
+  .notes a { color: #f0c000; text-decoration: underline; }
+  .notes a:hover { color: #ffdf76; }
+  #log {
+    background: #010409; color: #c9d1d9; padding: 0.8rem; border-radius: 6px;
+    font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+    font-size: 0.85rem; height: 320px; overflow-y: auto; white-space: pre-wrap;
+    border: 1px solid #30363d;
+  }
+  .progress {
+    width: 100%; height: 18px; background: #21262d; border-radius: 4px;
+    overflow: hidden; margin-top: 0.6rem; display: none;
+  }
+  .progress.active { display: block; }
+  .progress > div {
+    height: 100%; background: #2ea043; width: 0%;
+    transition: width 0.2s ease;
+    text-align: center; font-size: 0.7rem; line-height: 18px; color: white;
+  }
+  .warn {
+    background: #2d1f00; border: 1px solid #5a4a00; padding: 0.7rem;
+    border-radius: 6px; margin-bottom: 1rem; color: #ffdf76;
+  }
+  code { background: #21262d; padding: 0.1rem 0.3rem; border-radius: 3px; }
+</style>
+</head>
+<body>
+<h1>NerdMiner Web Flasher — AxeHub Edition</h1>
+
+<div class="warn">
+  <strong>Requirements:</strong> Chrome / Edge / Opera (Web Serial API). Firefox and Safari are NOT supported.
+  Connect ESP32 via USB and click <em>Connect &amp; Flash</em>. For ESP32-S3 use the <strong>USB</strong> port (not UART).
+</div>
+
+<div class="card">
+  <label for="board">Board:</label>
+  <select id="board"></select>
+  <div id="boardNotes" class="notes"></div>
+  <div class="notes" style="margin-top:0.6rem; border-left:3px solid #d29922; padding-left:0.6rem;">
+    <strong>Default chain: BC2 (Bitcoin II).</strong>
+    To switch to BTC after flashing, use the API:
+    <code>curl -X POST http://&lt;ip&gt;/api/axehub/v1/coin -d 'ticker=BTC' -H 'X-Axehub-Compat: 1'</code>.
+  </div>
+</div>
+
+<div class="card">
+  <label><input type="checkbox" id="provisionEnable"> Pre-provision (write WiFi + pool + wallet during flash)</label>
+  <div id="provisionFields" style="display:none; margin-top:0.6rem; display:grid; grid-template-columns:1fr 1fr; gap:0.5rem;">
+    <input type="text"     id="wifiSsid" placeholder="WiFi SSID">
+    <input type="password" id="wifiPass" placeholder="WiFi password">
+    <input type="text"     id="poolUrl"  placeholder="Pool URL (e.g. public-pool.io)">
+    <input type="number"   id="poolPort" placeholder="Pool port (e.g. 21496)">
+    <input type="text"     id="wallet" placeholder="BTC wallet (bc1...)" style="grid-column: span 2;">
+    <input type="text"     id="poolPass" placeholder="Pool password (default: x)">
+    <input type="number"   id="timezone" placeholder="Timezone offset (e.g. 2)">
+    <input type="text"     id="apname" placeholder="Custom AP SSID (optional)" style="grid-column: span 2;">
+  </div>
+</div>
+
+<div class="card">
+  <button id="connectBtn">Connect &amp; Flash</button>
+  <button id="eraseBtn" class="danger" disabled>Erase Flash</button>
+  <button id="disconnectBtn" class="secondary" disabled>Disconnect</button>
+  <div class="progress" id="progress"><div id="progressBar">0%</div></div>
+</div>
+
+<style>
+  #provisionFields input {
+    background:#0d1117; color:#c9d1d9; border:1px solid #30363d;
+    padding:0.45rem 0.6rem; border-radius:4px; font-size:0.9rem;
+  }
+  #provisionFields input::placeholder { color:#6e7681; }
+</style>
+
+<div class="card">
+  <label>Log:</label>
+  <div id="log"></div>
+</div>
+
+<script type="module">
+import { ESPLoader, Transport } from "https://cdn.jsdelivr.net/npm/esptool-js@0.5.6/+esm";
+
+const logEl = document.getElementById('log');
+const boardSel = document.getElementById('board');
+const boardNotes = document.getElementById('boardNotes');
+const connectBtn = document.getElementById('connectBtn');
+const eraseBtn = document.getElementById('eraseBtn');
+const disconnectBtn = document.getElementById('disconnectBtn');
+const progressEl = document.getElementById('progress');
+const progressBar = document.getElementById('progressBar');
+
+let manifest = null;
+let transport = null;
+let loader = null;
+
+function log(msg) {
+  const ts = new Date().toLocaleTimeString();
+  logEl.textContent += `[${ts}] ${msg}\n`;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setProgress(pct) {
+  if (pct < 0) {
+    progressEl.classList.remove('active');
+    return;
+  }
+  progressEl.classList.add('active');
+  progressBar.style.width = pct + '%';
+  progressBar.textContent = pct.toFixed(0) + '%';
+}
+
+async function loadManifest() {
+  const r = await fetch('manifest.json');
+  manifest = await r.json();
+  for (const b of manifest.boards) {
+    const opt = document.createElement('option');
+    opt.value = b.id;
+    opt.textContent = `${b.name}  [${b.chip}]`;
+    opt.dataset.board = JSON.stringify(b);
+    boardSel.appendChild(opt);
+  }
+  updateNotes();
+  log(`Manifest loaded. Firmware version: ${manifest.version}. Available boards: ${manifest.boards.length}.`);
+}
+boardSel.addEventListener('change', updateNotes);
+function updateNotes() {
+  const opt = boardSel.options[boardSel.selectedIndex];
+  if (!opt) return;
+  const b = JSON.parse(opt.dataset.board);
+  boardNotes.textContent = b.notes;
+}
+
+if (!('serial' in navigator)) {
+  log('ERROR: Web Serial API not supported. Use Chrome / Edge / Opera.');
+  connectBtn.disabled = true;
+} else {
+  loadManifest().catch(e => log('Failed to load manifest: ' + e.message));
+}
+
+// Provisioning toggle
+const provisionEnable = document.getElementById('provisionEnable');
+const provisionFields = document.getElementById('provisionFields');
+provisionEnable.addEventListener('change', () => {
+  provisionFields.style.display = provisionEnable.checked ? 'grid' : 'none';
+});
+
+// Build a 4096-byte sector containing "WEBFLASHER_CONFIG:{json}" + 0xFF padding.
+// Written to the coredump partition at 0x3F0000 — picked up on first boot by
+// applyWebflasherConfig() in wManager.cpp, which then erases this sector.
+function buildProvisioningBlob() {
+  const cfg = {};
+  const ssid = document.getElementById('wifiSsid').value.trim();
+  const pass = document.getElementById('wifiPass').value;
+  const url  = document.getElementById('poolUrl').value.trim();
+  const port = document.getElementById('poolPort').value;
+  const wal  = document.getElementById('wallet').value.trim();
+  const ppas = document.getElementById('poolPass').value;
+  const tz   = document.getElementById('timezone').value;
+  const apn  = document.getElementById('apname').value.trim();
+  if (ssid) cfg.wifi_ssid = ssid;
+  if (pass) cfg.wifi_pass = pass;
+  if (url)  cfg.pool_url  = url;
+  if (port) cfg.pool_port = parseInt(port, 10);
+  if (wal)  cfg.wallet    = wal;
+  if (ppas) cfg.pool_pass = ppas;
+  if (tz !== '') cfg.timezone = parseInt(tz, 10);
+  if (apn)  cfg.apname    = apn;
+  if (Object.keys(cfg).length === 0) return null;
+
+  const json = JSON.stringify(cfg);
+  const payload = 'WEBFLASHER_CONFIG:' + json;
+  const sector = new Uint8Array(0x1000).fill(0xFF);
+  for (let i = 0; i < payload.length; i++) {
+    if (i >= sector.length - 1) throw new Error('provisioning JSON too large for 4KB sector');
+    sector[i] = payload.charCodeAt(i);
+  }
+  // null-terminate so the C-string read on the device stops cleanly
+  sector[payload.length] = 0x00;
+  return { data: sector, json };
+}
+
+async function connectAndFlash() {
+  const opt = boardSel.options[boardSel.selectedIndex];
+  if (!opt) { log('Select a board first'); return; }
+  const board = JSON.parse(opt.dataset.board);
+
+  connectBtn.disabled = true;
+  setProgress(-1);
+
+  try {
+    log(`Pick the serial port for ${board.name}...`);
+    const port = await navigator.serial.requestPort();
+    transport = new Transport(port, true);
+
+    const espLoaderTerminal = {
+      clean() { /* keep log */ },
+      writeLine(d) { log(d); },
+      write(d) { logEl.textContent += d; logEl.scrollTop = logEl.scrollHeight; },
+    };
+
+    // Per-board override: some adapters (e.g. ESP32-CAM-MB CH340 dock) drop
+    // bytes at 921600. Manifest can specify `flash_baud` to slow it down.
+    const flashBaud = (typeof board.flash_baud === 'number') ? board.flash_baud : 921600;
+    if (flashBaud !== 921600) log(`Using slower flash baud ${flashBaud} (per manifest)`);
+    loader = new ESPLoader({
+      transport,
+      baudrate: flashBaud,
+      romBaudrate: 115200,
+      terminal: espLoaderTerminal,
+    });
+
+    log('Connecting to chip (BOOT mode)...');
+    const chip = await loader.main();
+    log(`Detected chip: ${chip}`);
+
+    if (board.chip && !chip.toLowerCase().includes(board.chip.toLowerCase().replace('-', ''))) {
+      log(`WARNING: selected board expects ${board.chip} but detected ${chip}. Continue at your own risk.`);
+    }
+
+    log(`Fetching ${board.factory_bin}...`);
+    const r = await fetch(board.factory_bin);
+    if (!r.ok) throw new Error(`fetch ${board.factory_bin}: HTTP ${r.status}`);
+    const buf = await r.arrayBuffer();
+    log(`Firmware: ${buf.byteLength} bytes (${(buf.byteLength/1024).toFixed(1)} KB)`);
+
+    // esptool-js expects binary as latin1-string
+    const u8ToStr = (u8) => {
+      let s = '';
+      for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+      return s;
+    };
+    const binStr = u8ToStr(new Uint8Array(buf));
+
+    const offset = parseInt(board.factory_offset, 16);
+    const fileArray = [{ data: binStr, address: offset }];
+
+    // Optional pre-provisioning: writes config blob to coredump partition (0x3F0000)
+    if (provisionEnable.checked) {
+      const blob = buildProvisioningBlob();
+      if (blob) {
+        log(`Provisioning blob: ${blob.json.length} bytes JSON, padded to 4096-byte sector at 0x3F0000`);
+        fileArray.push({ data: u8ToStr(blob.data), address: 0x3F0000 });
+      } else {
+        log('Provisioning enabled but no fields filled — skipping blob');
+      }
+    }
+
+    log(`Flashing ${fileArray.length} file(s)...`);
+
+    // Per-board override: some adapters drop bytes when esptool-js sends
+    // compressed (deflate) write commands. Manifest can disable it.
+    const useCompress = (board.compress === false) ? false : true;
+    if (!useCompress) log('Compression disabled (per manifest)');
+
+    await loader.writeFlash({
+      fileArray,
+      flashSize: board.flash_size || 'keep',
+      flashMode: 'keep',
+      flashFreq: 'keep',
+      eraseAll: false,
+      compress: useCompress,
+      reportProgress: (idx, written, total) => {
+        setProgress(100 * written / total);
+      },
+    });
+
+    log('Flash complete. Resetting chip...');
+    await loader.after();
+    setProgress(100);
+    log('Done. Chip reset. Open a serial monitor or check WiFi.');
+    eraseBtn.disabled = false;
+    disconnectBtn.disabled = false;
+  } catch (e) {
+    log('ERROR: ' + (e.message || e));
+    setProgress(-1);
+    if (transport) { try { await transport.disconnect(); } catch {} }
+    transport = null; loader = null;
+    connectBtn.disabled = false;
+  }
+}
+connectBtn.addEventListener('click', connectAndFlash);
+
+async function eraseFlash() {
+  if (!loader) { log('Run Connect & Flash first to initialize the transport.'); return; }
+  if (!confirm('This will erase the ENTIRE flash (pool/wallet config will be lost). Continue?')) return;
+  eraseBtn.disabled = true;
+  try {
+    log('Erase flash in progress — may take ~30s...');
+    await loader.eraseFlash();
+    log('Erase complete.');
+  } catch (e) {
+    log('Erase ERROR: ' + (e.message || e));
+  } finally {
+    eraseBtn.disabled = false;
+  }
+}
+eraseBtn.addEventListener('click', eraseFlash);
+
+async function disconnect() {
+  if (transport) { try { await transport.disconnect(); } catch {} }
+  transport = null; loader = null;
+  connectBtn.disabled = false;
+  eraseBtn.disabled = true;
+  disconnectBtn.disabled = true;
+  log('Disconnected.');
+}
+disconnectBtn.addEventListener('click', disconnect);
+
+</script>
+</body>
+</html>
