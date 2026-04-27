@@ -21,7 +21,7 @@ Endpoints include:
 - `/info` — full device snapshot (firmware / hashing / pool / hardware sections)
 - `/pool/set` + `/pool/set_fallback` — change primary / fallback pool over HTTP, persisted to NVS
 - `/pool/stats_api` — point the bottom-screen workers / diff / hashrate display at any custom stats URL (CKpool dashboards, public-pool, …)
-- `/coin` — switch chain (`BTC` / `BC2` (Bitcoin II) pre-configured, plus `custom` with per-endpoint URL overrides for any SHA-256 fork)
+- `/coin` — switch chain (`BTC` / `BC2` (BitcoinII) pre-configured, plus `custom` with per-endpoint URL overrides for any SHA-256 fork)
 - `/display/{mode,brightness,sleep_window}` — cycle screens, dim TFT, schedule nightly backlight off
 - `/buzzer/{test,tone}` — identify a board in a rack, custom alerts
 - `/system/restart` + `/wifi/reset` — soft reboot + reprovisioning escape hatch
@@ -42,7 +42,7 @@ uses the Web Serial API, which Firefox / Safari do not implement.
 ## Measured hashrate
 
 Sustained 5-min average from `/api/axehub/v1/info` after 10h+ uptime on a
-private BC2 (Bitcoin II) pool. CPU @ 240 MHz (no overclocking).
+private BC2 (BitcoinII) pool. CPU @ 240 MHz (no overclocking).
 
 | Board                     | Chip       | Hashrate     |
 |---------------------------|------------|--------------|
