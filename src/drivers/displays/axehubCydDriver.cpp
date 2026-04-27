@@ -216,6 +216,18 @@ static void axehubCyd_MinerScreen(unsigned long mElapsed) {
 static void drawNetworkStatic() {
     drawHeader("network");
 
+    // Override the coin icon area in the header with the miner's local IP —
+    // gives users a quick "what's my device IP" reference without opening
+    // a separate screen. WiFi-disconnected = leave coin icon as-is.
+    if (WiFi.status() == WL_CONNECTED) {
+        tft.fillRect(232, 1, 88, 28, COL_HEADER);
+        String ip = WiFi.localIP().toString();
+        tft.setTextColor(COL_DIM, COL_HEADER);
+        tft.setTextDatum(MR_DATUM);
+        tft.setTextFont(2);
+        tft.drawString(ip.c_str(), 314, 16);
+    }
+
     int gx = 8;
     drawCard(gx,        36,  150, 64);
     drawCard(gx + 154,  36,  150, 64);
