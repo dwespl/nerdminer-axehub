@@ -214,7 +214,9 @@ static void axehubCyd_MinerScreen(unsigned long mElapsed) {
 }
 
 static void drawNetworkStatic() {
-    drawHeader("network");
+    String coin = Settings.CoinTicker.length() ? Settings.CoinTicker : String("BTC");
+    String subtitle = coin + " network";
+    drawHeader(subtitle.c_str());
 
     // Override the coin icon area in the header with the miner's local IP —
     // gives users a quick "what's my device IP" reference without opening
@@ -318,7 +320,7 @@ void axehubCyd_Init(void) {
     tft.init();
     tft.writecommand(0x3A);
     tft.writedata(0x55);
-    tft.invertDisplay(true);
+    tft.invertDisplay(!Settings.invertColors);
     tft.setRotation(1);
     tft.setSwapBytes(true);
     tft.fillScreen(COL_BG);
