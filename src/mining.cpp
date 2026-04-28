@@ -1167,26 +1167,25 @@ void axehub_classic_overlap_canary(void)
 // loop. Plain REG_READ via the volatile pointer is safe on rev v3+.
 static inline bool nerd_sha_ll_read_digest_swap_if(void* ptr)
 {
-  volatile uint32_t * const text = (volatile uint32_t *)SHA_TEXT_BASE;
-  uint32_t fin = text[7];
-  // [axehub fix] Tightened from `(fin & 0xFFFF) != 0` to `fin != 0`. The
-  // 16-bit version checked low 16 bits of text[7] (which after bswap32
-  // land at bytes 28..29 of the stored hash — the *middle* bytes of the
-  // high uint32). Bytes 30..31 (the actual MSB per diff_from_target's
-  // LE-256 convention) were left random → pool computed diff ~e-10 →
-  // rejected as "Difficulty too low". Requiring the full word to be zero
-  // guarantees bytes 28..31 all zero ⇒ diff ≥ ~1e-5 minimum, matching
-  // typical pool session diff floors. Confirmed in field: 0 reject.
-  if (fin != 0)
+  // Match upstream NerdMiner exactly: DPORT_SEQUENCE_REG_READ wraps
+  // around the bus erratum present on early ESP32 silicon. Removing
+  // the wrapper for "perf" caused garbled reads on some chip revs.
+  DPORT_INTERRUPT_DISABLE();
+  uint32_t fin = DPORT_SEQUENCE_REG_READ(SHA_TEXT_BASE + 7 * 4);
+  if ((uint32_t)(fin & 0xFFFF) != 0)
+  {
+    DPORT_INTERRUPT_RESTORE();
     return false;
+  }
   ((uint32_t*)ptr)[7] = __builtin_bswap32(fin);
-  ((uint32_t*)ptr)[0] = __builtin_bswap32(text[0]);
-  ((uint32_t*)ptr)[1] = __builtin_bswap32(text[1]);
-  ((uint32_t*)ptr)[2] = __builtin_bswap32(text[2]);
-  ((uint32_t*)ptr)[3] = __builtin_bswap32(text[3]);
-  ((uint32_t*)ptr)[4] = __builtin_bswap32(text[4]);
-  ((uint32_t*)ptr)[5] = __builtin_bswap32(text[5]);
-  ((uint32_t*)ptr)[6] = __builtin_bswap32(text[6]);
+  ((uint32_t*)ptr)[0] = __builtin_bswap32(DPORT_SEQUENCE_REG_READ(SHA_TEXT_BASE + 0 * 4));
+  ((uint32_t*)ptr)[1] = __builtin_bswap32(DPORT_SEQUENCE_REG_READ(SHA_TEXT_BASE + 1 * 4));
+  ((uint32_t*)ptr)[2] = __builtin_bswap32(DPORT_SEQUENCE_REG_READ(SHA_TEXT_BASE + 2 * 4));
+  ((uint32_t*)ptr)[3] = __builtin_bswap32(DPORT_SEQUENCE_REG_READ(SHA_TEXT_BASE + 3 * 4));
+  ((uint32_t*)ptr)[4] = __builtin_bswap32(DPORT_SEQUENCE_REG_READ(SHA_TEXT_BASE + 4 * 4));
+  ((uint32_t*)ptr)[5] = __builtin_bswap32(DPORT_SEQUENCE_REG_READ(SHA_TEXT_BASE + 5 * 4));
+  ((uint32_t*)ptr)[6] = __builtin_bswap32(DPORT_SEQUENCE_REG_READ(SHA_TEXT_BASE + 6 * 4));
+  DPORT_INTERRUPT_RESTORE();
   return true;
 }
 
@@ -1339,124 +1338,31 @@ void minerWorkerHw(void * task_id)
       esp_sha_lock_engine(SHA2_256);
 
 
-      // C path — three optimisations:
-      //   1. OVERLAP 1: write block-2 TEXT input immediately after start_block
-      //      for block 1 (peripheral snapshots TEXT at trigger).
-      //   2. Reduced inter-padding writes: only TEXT[8] and TEXT[15] differ
-      //      between block-2 residual padding and inter padding (TEXT[9..14]
-      //      already zero from block-2 setup).
-      //   3. Skip final sha_ll_load: peripheral writes inter digest directly
-      //      to TEXT[0..7] after compute.
-      // First iteration: write full block-1 input. Subsequent iterations write
-      // only TEXT[0..7] because TEXT[8..15] was pre-filled during the previous
-      // iter's inter compute (OVERLAP 3).
-      uint32_t * const _sha_text = (uint32_t *)SHA_TEXT_BASE;
-      const uint32_t *src = (const uint32_t *)sha_buffer;
-      const uint32_t *src2 = (const uint32_t *)(sha_buffer+64);  // block-2 input upper half
+      // Standard upstream NerdMiner SHA peripheral pattern. Each nonce:
+      //   block-1 (header bytes 0..63) → CONTINUE block-2 (bytes 64..79
+      //   + nonce + padding) → LOAD digest → inter-block (digest + padding)
+      //   → LOAD final digest → read text[]. Every step gated by wait_idle
+      //   on SHA_BUSY register so reads always see fully-computed state.
+      //   Slower than inline-asm OVERLAP variants but produces correct
+      //   final SHA256d hashes that match what the pool computes.
+      for (uint32_t n = 0; n < job->nonce_count; ++n)
+      {
+        nerd_sha_ll_fill_text_block_sha256(sha_buffer);
+        sha_ll_start_block(SHA2_256);
 
-      // OVERLAP 2: block-1 SHA_START moved to end of loop body so block-1
-      // computes during the next iter's block-2 TEXT fill at top of loop.
-      // Pre-loop kicks off iter 0's block-1 with full TEXT fill.
-      _sha_text[0]  = src[0];  _sha_text[1]  = src[1];
-      _sha_text[2]  = src[2];  _sha_text[3]  = src[3];
-      _sha_text[4]  = src[4];  _sha_text[5]  = src[5];
-      _sha_text[6]  = src[6];  _sha_text[7]  = src[7];
-      _sha_text[8]  = src[8];  _sha_text[9]  = src[9];
-      _sha_text[10] = src[10]; _sha_text[11] = src[11];
-      _sha_text[12] = src[12]; _sha_text[13] = src[13];
-      _sha_text[14] = src[14]; _sha_text[15] = src[15];
-      sha_ll_start_block(SHA2_256);                   // block-1 iter 0
+        nerd_sha_hal_wait_idle();
+        nerd_sha_ll_fill_text_block_sha256_upper(sha_buffer+64, job->nonce_start+n);
+        sha_ll_continue_block(SHA2_256);
 
-      // NOP-pad counts tuned per peripheral phase to avoid premature reads.
-      #define NOPN(n) __asm__ __volatile__(".rept " #n "\n\tnop\n.endr")
-      // Outer-inner loop split: job-change check moved to outer (every 256 iters)
-      // so inner hot loop has no per-iter branch.
-      uint32_t n = 0;
-      const uint32_t n_total = job->nonce_count;
-      bool _done = false;
-      while (n < n_total && !_done) {
-        uint32_t inner_end = n + 256;
-        if (inner_end > n_total) inner_end = n_total;
-        for (; n < inner_end; ++n)
-        {
-        // Inline bswap32(nonce) via asm — GCC emits callx8 __bswapsi2 even at
-        // O3 (~15 cyc wasted). This inline is 7 instr ~7 cyc.
-        uint32_t sn;
-        {
-          uint32_t nonce_raw = job->nonce_start + n;
-          uint32_t tmp;
-          __asm__ (
-            "ssai 8\n\t"
-            "src %[sn], %[nin], %[nin]\n\t"
-            "ssai 24\n\t"
-            "src %[tmp], %[nin], %[nin]\n\t"
-            "and %[sn], %[sn], %[m1]\n\t"
-            "and %[tmp], %[tmp], %[m2]\n\t"
-            "or  %[sn], %[sn], %[tmp]\n\t"
-            : [sn]"=&r"(sn), [tmp]"=&r"(tmp)
-            : [nin]"r"(nonce_raw), [m1]"r"(0xFF00FF00), [m2]"r"(0x00FF00FF)
-          );
-        }
+        nerd_sha_hal_wait_idle();
+        sha_ll_load(SHA2_256);
 
-        // OVERLAP 2: block-1 (started at end of prev iter / pre-loop) is
-        // computing now. Fill block-2 TEXT input via inline asm with base+offset.
-        {
-          uint32_t s0 = src2[0], s1 = src2[1], s2 = src2[2];
-          __asm__ __volatile__ (
-            "s32i.n %0, %4, 0\n\t"
-            "s32i.n %1, %4, 4\n\t"
-            "s32i.n %2, %4, 8\n\t"
-            "s32i.n %3, %4, 12\n\t"
-            "s32i.n %5, %4, 16\n\t"
-            "s32i.n %6, %4, 20\n\t"
-            "s32i.n %6, %4, 24\n\t"
-            "s32i.n %6, %4, 28\n\t"
-            "s32i.n %6, %4, 32\n\t"
-            "s32i.n %6, %4, 36\n\t"
-            "s32i.n %6, %4, 40\n\t"
-            "s32i.n %6, %4, 44\n\t"
-            "s32i.n %6, %4, 48\n\t"
-            "s32i.n %6, %4, 52\n\t"
-            "s32i.n %6, %4, 56\n\t"
-            "s32i.n %7, %4, 60\n\t"
-            :
-            : "r"(s0), "r"(s1), "r"(s2), "r"(sn),
-              "r"(_sha_text), "r"(0x80000000), "r"(0), "r"(0x00000280)
-            : "memory"
-          );
-        }
+        nerd_sha_hal_wait_idle();
+        nerd_sha_ll_fill_text_block_sha256_double();
+        sha_ll_start_block(SHA2_256);
 
-        // Middle block: pre-CONTINUE NOPs + CONTINUE + OVERLAP 4 + post-CONTINUE
-        // NOPs + LOAD + post-LOAD NOPs + START_inter + OVERLAP 3 (8 stores from
-        // sha_buffer to TEXT[8..15] for next iter's block-1 upper half) + post-
-        // START_inter NOPs (wait for inter compute). All via single base reg.
-        __asm__ __volatile__ (
-          ".rept 13\n\tnop\n.endr\n\t"          // Pre-CONTINUE 13 NOPs
-          "s32i %[one],  %[base], 0x94\n\t"     // CONTINUE trigger
-          "s32i.n %[c80], %[base], 32\n\t"      // OVERLAP 4: TEXT[8]=0x80000000
-          "s32i.n %[c100],%[base], 60\n\t"      // OVERLAP 4: TEXT[15]=0x100
-          ".rept 59\n\tnop\n.endr\n\t"          // Post-CONTINUE 59 NOPs
-          "s32i %[one],  %[base], 0x98\n\t"     // LOAD trigger
-          ".rept 9\n\tnop\n.endr\n\t"           // Post-LOAD 9 NOPs
-          "s32i %[one],  %[base], 0x90\n\t"     // START_inter trigger
-          // OVERLAP 3: TEXT[8..15] = sha_buffer[8..15] via l32i.n (3 cyc/store)
-          "l32i.n a4, %[src], 32\n\t"  "s32i.n a4, %[base], 32\n\t"
-          "l32i.n a4, %[src], 36\n\t"  "s32i.n a4, %[base], 36\n\t"
-          "l32i.n a4, %[src], 40\n\t"  "s32i.n a4, %[base], 40\n\t"
-          "l32i.n a4, %[src], 44\n\t"  "s32i.n a4, %[base], 44\n\t"
-          "l32i.n a4, %[src], 48\n\t"  "s32i.n a4, %[base], 48\n\t"
-          "l32i.n a4, %[src], 52\n\t"  "s32i.n a4, %[base], 52\n\t"
-          "l32i.n a4, %[src], 56\n\t"  "s32i.n a4, %[base], 56\n\t"
-          "l32i.n a4, %[src], 60\n\t"  "s32i.n a4, %[base], 60\n\t"
-          // Post-START_inter NOPs (inter compute: 16 cyc OVERLAP 3 + 29 NOPs = 45)
-          ".rept 29\n\tnop\n.endr\n\t"
-          :
-          : [base]"r"(_sha_text), [one]"r"(1),
-            [c80]"r"(0x80000000), [c100]"r"(0x00000100),
-            [src]"r"(sha_buffer)
-          : "a4", "memory"
-        );
-
+        nerd_sha_hal_wait_idle();
+        sha_ll_load(SHA2_256);
         if (nerd_sha_ll_read_digest_swap_if(hash))
         {
           double diff_hash = diff_from_target(hash);
@@ -1470,31 +1376,14 @@ void minerWorkerHw(void * task_id)
             }
           }
         }
-        // End-of-iter: prep TEXT[0..7] for NEXT iter's block-1 and trigger
-        // SHA_START. Inline asm with 3 operands (base, src, one).
-        __asm__ __volatile__ (
-          "l32i.n a4, %[src], 0\n\t"  "s32i.n a4, %[base], 0\n\t"
-          "l32i.n a4, %[src], 4\n\t"  "s32i.n a4, %[base], 4\n\t"
-          "l32i.n a4, %[src], 8\n\t"  "s32i.n a4, %[base], 8\n\t"
-          "l32i.n a4, %[src], 12\n\t" "s32i.n a4, %[base], 12\n\t"
-          "l32i.n a4, %[src], 16\n\t" "s32i.n a4, %[base], 16\n\t"
-          "l32i.n a4, %[src], 20\n\t" "s32i.n a4, %[base], 20\n\t"
-          "l32i.n a4, %[src], 24\n\t" "s32i.n a4, %[base], 24\n\t"
-          "l32i.n a4, %[src], 28\n\t" "s32i.n a4, %[base], 28\n\t"
-          "s32i %[one], %[base], 0x90\n\t"  // SHA_START block-1 next iter
-          :
-          : [base]"r"(_sha_text), [src]"r"(sha_buffer), [one]"r"(1)
-          : "a4", "memory"
-        );
-        }  // end inner for-loop
-        // Outer loop: job-change check happens here, every 256 iters.
-        if (s_working_current_job_id != job_in_work) {
-          result->nonce_count = n;
-          _done = true;
+        if (
+             (uint8_t)(n & 0xFF) == 0 &&
+             s_working_current_job_id != job_in_work)
+        {
+          result->nonce_count = n+1;
+          break;
         }
-      }  // end outer while-loop
-      // Drain any in-flight block-1 from end of last iter.
-      nerd_sha_hal_wait_idle();
+      }
       esp_sha_unlock_engine(SHA2_256);
     } else
       vTaskDelay(2 / portTICK_PERIOD_MS);

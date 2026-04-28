@@ -41,15 +41,18 @@ uses the Web Serial API, which Firefox / Safari do not implement.
 
 ## Measured hashrate
 
-Sustained 5-min average from `/api/axehub/v1/info` after 10h+ uptime on a
-private BC2 (BitcoinII) pool. CPU @ 240 MHz (no overclocking).
+Pool-effective hashrate (accepted shares × pool difficulty / time) on a private
+BC2 (BitcoinII) test pool, diff floor 0.001, 100% acceptance ratio. CPU @ 240
+MHz, no overclocking. The on-screen `current_khs` counter tracks SHA peripheral
+iteration speed and converges to the effective rate after a few minutes of
+warm-up.
 
-| Board                     | Chip       | Hashrate     |
-|---------------------------|------------|--------------|
-| CYD 2.8 (ESP32-2432S028R) | ESP32-D0   | **1053 kH/s** |
-| CYD 2.4 (ESP32-2432S024)  | ESP32-D0   | **1054 kH/s** |
-| ESP32-CAM                 | ESP32-D0   | **1057 kH/s** |
-| ESP32-S3 (DevKitC N16R8)  | ESP32-S3R8 | **377 kH/s**  |
+| Board                     | Chip       | Pool-effective |
+|---------------------------|------------|----------------|
+| CYD 2.4 (ESP32-2432S024)  | ESP32-D0   | **~560 kH/s**  |
+| CYD 2.8 (ESP32-2432S028R) | ESP32-D0   | **~500 kH/s**  |
+| ESP32-CAM                 | ESP32-D0   | **~380 kH/s**  |
+| ESP32-S3 (DevKitC N16R8)  | ESP32-S3R8 | **~360 kH/s**  |
 
 ## Quick start
 

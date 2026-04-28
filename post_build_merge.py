@@ -188,11 +188,22 @@ def create_merged_firmware(source, target, env):
         
         # Find actual end of data (round up to 4K boundary)
         actual_end = ((max_address + 4095) // 4096) * 4096
-        
+
+        # Normalize build-environment-specific tokens. Replacement preserves
+        # length so binary layout is unchanged.
+        try:
+            import getpass
+            user_token = getpass.getuser().encode('ascii', 'replace')
+            if user_token:
+                neutral = (b'anon' + b' ' * len(user_token))[:len(user_token)]
+                merged_data[:actual_end] = merged_data[:actual_end].replace(user_token, neutral)
+        except Exception:
+            pass
+
         # Write factory file
         with open(factory_file, 'wb') as f:
             f.write(merged_data[:actual_end])
-        
+
         print(f"✅ Factory: {factory_file.name} ({actual_end} bytes)")
         
     except Exception as e:
