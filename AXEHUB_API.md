@@ -48,11 +48,13 @@ curl -H "X-AxeHub-Compat: 1" http://DEV/api/axehub/v1/ping
 Full telemetry snapshot. Returns a large JSON with device/pool/hashrate/firmware fields.
 
 Top-level keys:
-- `device` — mac, hostname, uptime_s, heap_free, rssi, chip, features
+- `firmware` — name, version, axehub_compat, features, sw_worker_path
+- `device` — mac, hostname, board, chip
+- `hashing` — current/average 1m/5m kH/s, hw/sw split, shares_accepted/rejected, reject_reasons, best_diff, valid_blocks
 - `pool` — `primary` + `fallback` (url, port, user, active, last_ping_ms, difficulty)
-- `hashrate` — current/average 1m/5m in kH/s, hw/sw split
-- `mining` — totals, shares, best diff, templates
-- `firmware` — build version, commit, flags, selftest results
+- `hardware` — temp_board_c, heap_free_bytes, uptime_s, wifi_rssi_dbm, cpu_freq_mhz, last_reset_reason
+- `display` — tft_present, current_mode, available_modes, brightness_pct, auto_sleep_enabled/_start_hour/_end_hour, **invert_colors**
+- `lottery` — probability_per_block, expected_years_to_block, blocks_found, closest_diff_this_session
 
 Example:
 ```bash
@@ -160,6 +162,22 @@ to NVS so it survives reboot.
 
 Returns `{"status":"ok","value":128,"persisted":true}`.
 
+### `POST /display/invert`
+
+Toggle TFT colour inversion at runtime — fixes the white-background look
+on opposite-polarity CYD 2.8/2.4 panels (some sellers/batches ship the
+TFT with reversed default polarity even though the model name is the
+same).
+
+Body:
+```json
+{"on": true}
+```
+
+Returns `{"status":"ok","invert_colors":true}`. Persisted to NVS, applied
+to the live framebuffer immediately (no reboot needed). Current state is
+also exposed as `display.invert_colors` in the `GET /info` payload.
+
 ### `POST /display/sleep_window`
 
 Turn the backlight off during a time-of-day window. Supports wrap-around
@@ -260,6 +278,9 @@ requests.post(f"{BASE}/display/brightness", headers=H,
     json={"value": 80, "persist": True})
 requests.post(f"{BASE}/display/sleep_window", headers=H,
     json={"start": "22:00", "end": "06:00"})
+
+# fix opposite-polarity TFT panel (white background instead of dark)
+requests.post(f"{BASE}/display/invert", headers=H, json={"on": True})
 
 # play a tone
 requests.post(f"{BASE}/buzzer/tone", headers=H,

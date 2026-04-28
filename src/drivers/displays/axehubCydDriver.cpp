@@ -112,7 +112,7 @@ static void drawHeader(const char* subtitle) {
     tft.setTextColor(COL_HASHRATE, COL_HEADER);
     tft.setTextDatum(ML_DATUM);
     tft.setTextFont(4);
-    tft.drawString("axehub", 8, 16);
+    tft.drawString("AxeHub", 8, 16);
     tft.setTextColor(COL_FG, COL_HEADER);
     tft.setTextFont(2);
     tft.drawString(subtitle, 110, 17);
@@ -120,7 +120,7 @@ static void drawHeader(const char* subtitle) {
 }
 
 static void drawMinerStatic() {
-    String coin = Settings.CoinTicker.length() ? Settings.CoinTicker : String("BTC");
+    String coin = Settings.CoinTicker.length() ? Settings.CoinTicker : String("BC2");
     String subtitle = String("solo ") + coin + " miner";
     drawHeader(subtitle.c_str());
 
@@ -214,7 +214,7 @@ static void axehubCyd_MinerScreen(unsigned long mElapsed) {
 }
 
 static void drawNetworkStatic() {
-    String coin = Settings.CoinTicker.length() ? Settings.CoinTicker : String("BTC");
+    String coin = Settings.CoinTicker.length() ? Settings.CoinTicker : String("BC2");
     String subtitle = coin + " network";
     drawHeader(subtitle.c_str());
 
@@ -336,6 +336,11 @@ void axehubCyd_Init(void) {
     s_lastScreen = -1;
 }
 
+void axehubCyd_ApplyInvertColors(void) {
+    tft.invertDisplay(!Settings.invertColors);
+    s_needFullRedraw = true;
+}
+
 void axehubCyd_AlternateScreenState(void) {
 #ifdef TFT_BL
     static bool bl = true;
@@ -355,7 +360,7 @@ void axehubCyd_LoadingScreen(void) {
     tft.setTextColor(COL_HASHRATE, COL_BG);
     tft.setTextDatum(MC_DATUM);
     tft.setTextFont(4);
-    tft.drawString("axehub", 160, 100);
+    tft.drawString("AxeHub", 160, 100);
     tft.setTextColor(COL_DIM, COL_BG);
     tft.setTextFont(2);
     tft.drawString("starting...", 160, 130);

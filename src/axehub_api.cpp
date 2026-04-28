@@ -285,6 +285,7 @@ static void handleInfo(AsyncWebServerRequest* request) {
     disp["auto_sleep_enabled"]    = false;
     disp["auto_sleep_start_hour"] = nullptr;
     disp["auto_sleep_end_hour"]   = nullptr;
+    disp["invert_colors"]         = Settings.invertColors;
 
     // ---- lottery ----
     JsonObject lot = doc.createNestedObject("lottery");
@@ -833,6 +834,37 @@ static void handleDisplayBrightness(AsyncWebServerRequest* request, JsonVariant&
     request->send(200, "application/json", out);
 }
 
+#ifdef AXEHUB_DISPLAY
+extern void axehubCyd_ApplyInvertColors();
+#endif
+
+static void handleDisplayInvert(AsyncWebServerRequest* request, JsonVariant& json) {
+    if (!checkCompatHeader(request)) { send404(request); return; }
+    if (!json.is<JsonObject>()) {
+        sendJsonStatus(request, 400, "error", "expected JSON object");
+        return;
+    }
+    JsonObject o = json.as<JsonObject>();
+    if (!o.containsKey("on")) {
+        sendJsonStatus(request, 400, "error", "'on' boolean required");
+        return;
+    }
+    bool on = o["on"].as<bool>();
+    Settings.invertColors = on;
+    nvMemory nv;
+    nv.saveConfig(&Settings);
+#ifdef AXEHUB_DISPLAY
+    axehubCyd_ApplyInvertColors();
+#endif
+
+    StaticJsonDocument<128> doc;
+    doc["status"]        = "ok";
+    doc["invert_colors"] = on;
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
 static void handleDisplayMode(AsyncWebServerRequest* request, JsonVariant& json) {
     if (!checkCompatHeader(request)) { send404(request); return; }
     if (!currentDisplayDriver) {
@@ -925,6 +957,10 @@ static void axehubServerTask(void*) {
     auto* displayBrightnessHandler = new AsyncCallbackJsonWebHandler("/api/axehub/v1/display/brightness", handleDisplayBrightness);
     displayBrightnessHandler->setMethod(HTTP_POST);
     s_server->addHandler(displayBrightnessHandler);
+
+    auto* displayInvertHandler = new AsyncCallbackJsonWebHandler("/api/axehub/v1/display/invert", handleDisplayInvert);
+    displayInvertHandler->setMethod(HTTP_POST);
+    s_server->addHandler(displayInvertHandler);
 
     auto* displaySleepHandler = new AsyncCallbackJsonWebHandler("/api/axehub/v1/display/sleep_window", handleDisplaySleepWindow);
     displaySleepHandler->setMethod(HTTP_POST);
