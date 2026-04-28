@@ -1,5 +1,5 @@
 {
-  "version": "1.8.3",
+  "version": "1.8.4",
   "boards": [
     {
       "id": "ESP32-S3-devKitv1",
