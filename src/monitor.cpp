@@ -30,10 +30,7 @@ extern monitor_data mMonitor;
 extern TSettings Settings;
 bool invertColors = false;
 
-// Parse a CKpool/bfgminer-style hashrate string ("5.92T", "451.2K") into
-// raw H/s. Returns 0 for empty/malformed input. Used by the format-flexible
-// pool-stats parser to normalise the per-worker hashrate field — public-pool
-// gives us a number directly, CKpool gives us a suffixed string.
+// Parse a hashrate string ("5.92T", "451.2K") into raw H/s; 0 on error.
 static double parse_hashrate_suffix(const char* s) {
     if (!s || !*s) return 0.0;
     char* endp = nullptr;
@@ -142,13 +139,8 @@ void updateGlobalData(void){
             String payload = http.getString();
             Serial.printf("[Global] payload len=%d\n", (int)payload.length());
 
-            // Three payload shapes are handled here:
-            //   1) blockchain.info /stats          → OBJECT, `hash_rate`
-            //      (GH/s) + `difficulty`. Used for BTC.
-            //   2) BC2 mempool /api/v1/mining/hashrate/3d → OBJECT,
-            //      `currentHashrate` (H/s) + `currentDifficulty`.
-            //   3) mempool.space /api/v1/blocks    → ARRAY, [0].difficulty.
-            // Filter keeps the parser cheap regardless of payload size.
+            // Three payload shapes: blockchain.info /stats (object, GH/s),
+            // mempool /mining/hashrate (object, H/s), mempool /blocks (array).
             double diff = 0.0;
             double hs   = 0.0;
             payload.trim();
@@ -171,10 +163,8 @@ void updateGlobalData(void){
               filter["difficulty"]        = true;
               StaticJsonDocument<256> doc;
               deserializeJson(doc, payload, DeserializationOption::Filter(filter));
-              // mempool.space (BC2) ships both `currentHashrate`/`currentDifficulty`
-              // (scalars we want) AND `difficulty` as a HISTORY ARRAY. Branch on
-              // shape so we don't accidentally read the array as a 0-valued
-              // scalar and clobber the good value.
+              // mempool.space ships both scalars AND `difficulty` as a history
+              // array — branch on shape to avoid reading the array as a scalar.
               if (doc.containsKey("currentHashrate") || doc.containsKey("currentDifficulty")) {
                 if (doc.containsKey("currentHashrate"))   hs   = doc["currentHashrate"].as<double>();
                 if (doc.containsKey("currentDifficulty")) diff = doc["currentDifficulty"].as<double>();
@@ -185,10 +175,7 @@ void updateGlobalData(void){
               }
             }
 
-            // Background image labels network hashrate as "EH/s" — scale
-            // currentHashrate (raw H/s) to exahashes and format with enough
-            // decimals to stay readable across chains (BTC ~1000 EH/s,
-            // BC2 ~0.036 EH/s).
+            // Scale H/s to EH/s for the network-hashrate display label.
             if (hs > 0.0) {
               double eh = hs / 1.0e18;
               char buf[16];
@@ -432,7 +419,10 @@ static uint8_t s_hashrate_recalc = 0;
 
 String getCurrentHashRate(unsigned long mElapsed)
 {
-  double hashrate = (double)elapsedKHs * 1000.0 / (double)mElapsed;
+  // Per-worker counters (instant, pool-diff-independent). Pool_eff is
+  // the truth metric but its 1/sqrt(N) variance wobbles the LCD.
+  double hashrate = (double)(axehub_metrics_get_hw_khs() + axehub_metrics_get_sw_khs());
+  (void)mElapsed;
 
   s_hashrate_summ += hashrate;
   s_hashrate_avg_list.push_back(hashrate);
@@ -541,10 +531,8 @@ coin_data getCoinData(unsigned long mElapsed)
 {
   coin_data data;
 
-  // Order matters for first-paint UX: cheap endpoints first so block height
-  // and price land on screen within ~1s, then the heavier global stats fetch.
-  // (Originally updateGlobalData() ran first and held the frame on a 6s
-  // timeout while the user stared at the hardcoded default block 793261.)
+  // Cheap endpoints first (height + price land within ~1s); heavy global
+  // stats fetch last to avoid blocking first paint.
   data.blockHeight     = getBlockHeight();
   data.btcPrice        = getBTCprice();
   data.completedShares = shares;
@@ -628,10 +616,8 @@ pool_data getPoolData(void){
             pData.bestDifficulty = String(best_diff_string);
             pData.workersCount = 1;
             char worker_hash_s[16] = {0};
-            // totalKHashes already includes Mhashes * 1000 (see mining.cpp:1662
-            // where currentKHashes = (Mhashes * 1000) + hashes/1000), so the
-            // original formula "Mhashes*1e6 + totalKHashes*1000" was counting
-            // Mhashes twice, producing a Total Hash Rate ~2x the real value.
+            // totalKHashes already includes Mhashes*1000 — original formula
+            // was double-counting Mhashes (~2x inflated Total Hash Rate).
             uint64_t totalH = (uint64_t)totalKHashes * 1000ULL;
             double runTimeSec = upTime ? (double)upTime : 1.0;
             double avgHs = totalH / runTimeSec;

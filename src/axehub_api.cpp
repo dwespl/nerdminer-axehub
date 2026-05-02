@@ -223,13 +223,22 @@ static void handleInfo(AsyncWebServerRequest* request) {
     dev["board"]    = AXEHUB_BOARD_NAME;
     dev["chip"]     = chipModelName();
 
-    // ---- hashing ----
+    // current_khs from per-worker counters (upstream elapsedKHs inflates
+    // when monitor loop stalls >1s).
     JsonObject hash = doc.createNestedObject("hashing");
-    hash["current_khs"]        = elapsedKHs;
+    uint32_t hw_khs_now = axehub_metrics_get_hw_khs();
+    uint32_t sw_khs_now = axehub_metrics_get_sw_khs();
+    uint32_t accept_total = axehub_metrics_get_accept_total();
+    uint32_t uptime_now   = (uint32_t)upTime;
+    // pool_effective_khs = accepted_shares * pool_diff * 2^32 / uptime —
+    // independent of device counters. Same helper backs the LCD source.
+    uint32_t pool_eff_khs = axehub_metrics_get_pool_effective_khs(uptime_now);
+    hash["current_khs"]        = hw_khs_now + sw_khs_now;
     hash["average_1m_khs"]     = axehub_metrics_get_ema_1m_khs();
     hash["average_5m_khs"]     = axehub_metrics_get_ema_5m_khs();
+    hash["pool_effective_khs"] = pool_eff_khs;
     hash["expected_khs"]       = nullptr;
-    hash["shares_accepted"]    = axehub_metrics_get_accept_total();
+    hash["shares_accepted"]    = accept_total;
     hash["shares_rejected"]    = axehub_metrics_get_reject_total();
     JsonArray rr = hash.createNestedArray("reject_reasons");
     {
@@ -487,6 +496,438 @@ static void handleWifiReset(AsyncWebServerRequest* request) {
     sendJsonStatus(request, 200, "ok");
     scheduleDeferred(+[]() { reset_configuration(); }, 800);
 }
+
+#ifdef AXEHUB_HW_FAST
+// Runtime trigger for SHA TEXT-overlap and H-write canaries (boot-time runs
+// disabled on S3 due to lwIP routing regression). Acquires SHA peripheral,
+// returns verdicts as JSON.
+static void handleShaCanary(AsyncWebServerRequest* request) {
+    if (!checkCompatHeader(request)) { send404(request); return; }
+    bool overlap = axehub_sha_fast_overlap_canary();
+    bool hwrite  = axehub_sha_fast_hwrite_canary();
+    StaticJsonDocument<128> doc;
+    doc["overlap_safe"] = overlap;
+    doc["hwrite_safe"]  = hwrite;
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+#include <sha/sha_dma.h>     // esp_sha_acquire/release_hardware
+
+// Inline microbench: peripheral cycles for CONTINUE+wait, wait-only, START+wait.
+// Acquires SHA hardware (blocks miner briefly), runs N iters, returns
+// avg/min cyc/iter as JSON.
+static void handleShaMicrobench(AsyncWebServerRequest* request) {
+    if (!checkCompatHeader(request)) { send404(request); return; }
+
+    auto rdcc = [](){ uint32_t c; __asm__ __volatile__("rsr.ccount %0":"=r"(c)); return c; };
+
+    volatile uint32_t * const sha_base = (uint32_t *)0x6003B000;
+    volatile uint32_t * const sha_text = (uint32_t *)0x6003B080;
+    volatile uint32_t * const sha_h    = (uint32_t *)0x6003B040;
+
+    esp_sha_acquire_hardware();
+
+    // Prime: one full block to leave H in a known midstate.
+    sha_base[0] = 2;
+    for (int i = 0; i < 16; ++i) sha_text[i] = 0xDEADBEEF + i;
+    for (int i = 0; i < 8; ++i) sha_h[i] = 0x12345678 + i;
+    sha_base[16/4] = 1;
+    while (sha_base[24/4]) ;
+
+    const uint32_t N = 500;
+
+    uint32_t min_full = 0xFFFFFFFF, sum_full = 0;
+    for (uint32_t i = 0; i < N; ++i) {
+        sha_text[3] = i;
+        uint32_t t0 = rdcc();
+        sha_base[20/4] = 1;       // CONTINUE @ 0x14
+        while (sha_base[24/4]) ;  // wait BUSY @ 0x18
+        uint32_t dt = rdcc() - t0;
+        sum_full += dt;
+        if (dt < min_full) min_full = dt;
+    }
+
+    uint32_t min_wait = 0xFFFFFFFF, sum_wait = 0;
+    for (uint32_t i = 0; i < N; ++i) {
+        sha_text[3] = i;
+        sha_base[20/4] = 1;
+        uint32_t t0 = rdcc();
+        while (sha_base[24/4]) ;
+        uint32_t dt = rdcc() - t0;
+        sum_wait += dt;
+        if (dt < min_wait) min_wait = dt;
+    }
+
+    uint32_t min_start = 0xFFFFFFFF, sum_start = 0;
+    for (uint32_t i = 0; i < N; ++i) {
+        sha_text[3] = i;
+        uint32_t t0 = rdcc();
+        sha_base[16/4] = 1;       // START @ 0x10
+        while (sha_base[24/4]) ;
+        uint32_t dt = rdcc() - t0;
+        sum_start += dt;
+        if (dt < min_start) min_start = dt;
+    }
+
+    esp_sha_release_hardware();
+
+    StaticJsonDocument<384> doc;
+    doc["cpu_freq_mhz"] = getCpuFrequencyMhz();
+    JsonObject cw = doc.createNestedObject("continue_wait");
+    cw["avg"] = sum_full/N;
+    cw["min"] = min_full;
+    JsonObject wo = doc.createNestedObject("wait_only");
+    wo["avg"] = sum_wait/N;
+    wo["min"] = min_wait;
+    JsonObject sw = doc.createNestedObject("start_wait");
+    sw["avg"] = sum_start/N;
+    sw["min"] = min_start;
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+// Phase microbench: replicates the production hot loop section by section,
+// measuring each phase's CPU cost. Returns per-section avg cycles as JSON.
+static void handleShaMicrobenchPhase(AsyncWebServerRequest* request) {
+    if (!checkCompatHeader(request)) { send404(request); return; }
+
+    auto rdcc = [](){ uint32_t c; __asm__ __volatile__("rsr.ccount %0":"=r"(c)); return c; };
+
+    volatile uint32_t * const sha_base = (uint32_t *)0x6003B000;
+    volatile uint32_t * const sha_text = (uint32_t *)0x6003B080;
+    volatile uint32_t * const sha_h    = (uint32_t *)0x6003B040;
+
+    esp_sha_acquire_hardware();
+
+    sha_base[0] = 2;
+    for (int i = 0; i < 8; ++i) sha_h[i] = 0x6A09E667 + i*0x11111111;
+    for (int i = 0; i < 16; ++i) sha_text[i] = 0xDEADBEEF + i;
+    sha_base[16/4] = 1;
+    while (sha_base[24/4]) ;
+
+    const uint32_t N = 500;
+    uint64_t s_overlap1=0, s_wait1=0, s_phaseE=0, s_trig=0;
+    uint64_t s_overlap2=0, s_wait2=0, s_filter=0, s_phaseA=0, s_trigC=0;
+
+    for (uint32_t i = 0; i < N; ++i) {
+        sha_text[3] = i;
+        sha_base[20/4] = 1;
+
+        uint32_t t0 = rdcc();
+        sha_text[8]=0x80; sha_text[9]=0; sha_text[10]=0; sha_text[11]=0;
+        sha_text[12]=0; sha_text[13]=0; sha_text[14]=0; sha_text[15]=0x10000;
+        uint32_t t1 = rdcc();
+        s_overlap1 += t1-t0;
+
+        t0 = rdcc();
+        while (sha_base[24/4]) ;
+        t1 = rdcc();
+        s_wait1 += t1-t0;
+
+        t0 = rdcc();
+        sha_text[0]=sha_h[0]; sha_text[1]=sha_h[1]; sha_text[2]=sha_h[2]; sha_text[3]=sha_h[3];
+        sha_text[4]=sha_h[4]; sha_text[5]=sha_h[5]; sha_text[6]=sha_h[6]; sha_text[7]=sha_h[7];
+        t1 = rdcc();
+        s_phaseE += t1-t0;
+
+        t0 = rdcc();
+        __asm__ __volatile__("memw" ::: "memory");
+        sha_base[0] = 2;
+        sha_base[16/4] = 1;
+        t1 = rdcc();
+        s_trig += t1-t0;
+
+        t0 = rdcc();
+        sha_text[0]=0xAAA0; sha_text[1]=0xAAA1; sha_text[2]=0xAAA2; sha_text[3]=i;
+        sha_text[4]=0x80; sha_text[5]=0; sha_text[6]=0; sha_text[7]=0;
+        sha_text[8]=0; sha_text[9]=0; sha_text[10]=0; sha_text[11]=0;
+        sha_text[12]=0; sha_text[13]=0; sha_text[14]=0; sha_text[15]=0x20000;
+        t1 = rdcc();
+        s_overlap2 += t1-t0;
+
+        t0 = rdcc();
+        while (sha_base[24/4]) ;
+        t1 = rdcc();
+        s_wait2 += t1-t0;
+
+        t0 = rdcc();
+        uint32_t h7 = sha_h[7];
+        bool reject = ((h7 >> 16) != 0);
+        (void)reject;
+        t1 = rdcc();
+        s_filter += t1-t0;
+
+        t0 = rdcc();
+        sha_h[0]=0x6A09E667; sha_h[1]=0xBB67AE85; sha_h[2]=0x3C6EF372; sha_h[3]=0xA54FF53A;
+        sha_h[4]=0x510E527F; sha_h[5]=0x9B05688C; sha_h[6]=0x1F83D9AB; sha_h[7]=0x5BE0CD19;
+        t1 = rdcc();
+        s_phaseA += t1-t0;
+
+        t0 = rdcc();
+        __asm__ __volatile__("memw" ::: "memory");
+        sha_base[0] = 2;
+        sha_base[20/4] = 1;
+        t1 = rdcc();
+        s_trigC += t1-t0;
+
+        while (sha_base[24/4]) ;
+    }
+
+    esp_sha_release_hardware();
+
+    uint64_t total = s_overlap1+s_wait1+s_phaseE+s_trig+s_overlap2+s_wait2+s_filter+s_phaseA+s_trigC;
+
+    StaticJsonDocument<512> doc;
+    doc["cpu_freq_mhz"] = getCpuFrequencyMhz();
+    doc["iters"] = N;
+    doc["overlap1_8stores"] = (uint32_t)(s_overlap1/N);
+    doc["wait1_block2"] = (uint32_t)(s_wait1/N);
+    doc["phase_e_h_to_text"] = (uint32_t)(s_phaseE/N);
+    doc["trig_inter_memw_mode_start"] = (uint32_t)(s_trig/N);
+    doc["overlap2_16stores"] = (uint32_t)(s_overlap2/N);
+    doc["wait2_inter"] = (uint32_t)(s_wait2/N);
+    doc["filter_check"] = (uint32_t)(s_filter/N);
+    doc["phase_a_midstate_to_h"] = (uint32_t)(s_phaseA/N);
+    doc["trig_continue_memw_mode_continue"] = (uint32_t)(s_trigC/N);
+    doc["total_per_nonce"] = (uint32_t)(total/N);
+    doc["khs_implied"] = (uint32_t)(240000000ull/(total/N)/1000);
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+#endif  // AXEHUB_HW_FAST
+
+#if defined(CONFIG_IDF_TARGET_ESP32) && defined(HARDWARE_SHA265)
+extern "C" {
+#include "soc/hwcrypto_reg.h"
+#include "esp32/sha.h"
+}
+
+// Classic ESP32 phase microbench — replicates the production hot-loop section
+// by section, mirroring axehub_hw_pipelined_classic_v3.S. Returns per-section
+// avg cycles as JSON for locating where per-nonce CPU budget is spent.
+static void handleShaMicrobenchPhaseClassic(AsyncWebServerRequest* request) {
+    if (!checkCompatHeader(request)) { send404(request); return; }
+
+    auto rdcc = [](){ uint32_t c; __asm__ __volatile__("rsr.ccount %0":"=r"(c)); return c; };
+
+    volatile uint32_t * const text  = (volatile uint32_t *)SHA_TEXT_BASE;
+    volatile uint32_t * const start = (volatile uint32_t *)SHA_256_START_REG;
+    volatile uint32_t * const cont  = (volatile uint32_t *)SHA_256_CONTINUE_REG;
+    volatile uint32_t * const load  = (volatile uint32_t *)SHA_256_LOAD_REG;
+    volatile uint32_t * const busy  = (volatile uint32_t *)SHA_256_BUSY_REG;
+
+    static const uint32_t test_blk1[16] = {
+        0x11111111, 0x22222222, 0x33333333, 0x44444444,
+        0x55555555, 0x66666666, 0x77777777, 0x88888888,
+        0x99999999, 0xAAAAAAAA, 0xBBBBBBBB, 0xCCCCCCCC,
+        0xDDDDDDDD, 0xEEEEEEEE, 0xFFFFFFFF, 0x12345678,
+    };
+
+    esp_sha_lock_engine(SHA2_256);
+
+    const uint32_t N = 200;
+    uint64_t s_b1fill=0, s_start=0, s_w1=0, s_b2fill=0, s_cont=0, s_w2=0;
+    uint64_t s_load1=0, s_w3=0, s_b3fill=0, s_b3start=0, s_w4=0;
+    uint64_t s_load2=0, s_w5=0, s_filter=0;
+
+    // Prime: one full block-1 done so peripheral isn't in pristine state.
+    for (int i = 0; i < 16; ++i) text[i] = test_blk1[i];
+    *start = 1;
+    while (*busy) {}
+    *load = 1;
+    while (*busy) {}
+
+    for (uint32_t iter = 0; iter < N; ++iter) {
+        // ===== BLOCK-1 fill (16 TEXT writes) =====
+        uint32_t t0 = rdcc();
+        for (int i = 0; i < 16; ++i) text[i] = test_blk1[i] ^ iter;
+        s_b1fill += rdcc() - t0;
+
+        // ===== START block-1 =====
+        t0 = rdcc();
+        *start = 1;
+        __asm__ __volatile__("memw" ::: "memory");
+        s_start += rdcc() - t0;
+
+        // ===== BLOCK-2 fill (overlapped with block-1 compute in production) =====
+        t0 = rdcc();
+        text[0] = 0x10101010;
+        text[1] = 0x20202020;
+        text[2] = 0x30303030;
+        text[3] = iter;            // nonce
+        text[4] = 0x80000000;      // pad
+        text[5] = 0; text[6] = 0; text[7] = 0;
+        text[8] = 0; text[9] = 0; text[10] = 0; text[11] = 0;
+        text[12] = 0; text[13] = 0; text[14] = 0;
+        text[15] = 0x280;          // length
+        s_b2fill += rdcc() - t0;
+
+        // ===== Wait1 (block-1 done) =====
+        t0 = rdcc();
+        while (*busy) {}
+        s_w1 += rdcc() - t0;
+
+        // ===== CONTINUE block-2 =====
+        t0 = rdcc();
+        *cont = 1;
+        __asm__ __volatile__("memw" ::: "memory");
+        s_cont += rdcc() - t0;
+
+        // ===== Wait2 (block-2 done) =====
+        t0 = rdcc();
+        while (*busy) {}
+        s_w2 += rdcc() - t0;
+
+        // ===== LOAD1 =====
+        t0 = rdcc();
+        *load = 1;
+        __asm__ __volatile__("memw" ::: "memory");
+        s_load1 += rdcc() - t0;
+
+        // ===== Wait3 (LOAD1 done) =====
+        t0 = rdcc();
+        while (*busy) {}
+        s_w3 += rdcc() - t0;
+
+        // ===== BLOCK-3 fill (B.1 persistent zeros: only 2 stores) =====
+        t0 = rdcc();
+        text[8]  = 0x80000000;     // pad
+        text[15] = 0x100;          // len_blk3
+        s_b3fill += rdcc() - t0;
+
+        // ===== START block-3 =====
+        t0 = rdcc();
+        *start = 1;
+        __asm__ __volatile__("memw" ::: "memory");
+        s_b3start += rdcc() - t0;
+
+        // ===== Wait4 (block-3 done) =====
+        t0 = rdcc();
+        while (*busy) {}
+        s_w4 += rdcc() - t0;
+
+        // ===== LOAD2 =====
+        t0 = rdcc();
+        *load = 1;
+        __asm__ __volatile__("memw" ::: "memory");
+        s_load2 += rdcc() - t0;
+
+        // ===== Wait5 (LOAD2 done) =====
+        t0 = rdcc();
+        while (*busy) {}
+        s_w5 += rdcc() - t0;
+
+        // ===== Filter check (l16ui TEXT[7] low 16) =====
+        t0 = rdcc();
+        uint32_t h7 = text[7];
+        bool reject = ((h7 & 0xFFFF) != 0);
+        (void)reject;
+        s_filter += rdcc() - t0;
+    }
+
+    esp_sha_unlock_engine(SHA2_256);
+
+    uint64_t total = s_b1fill + s_start + s_w1 + s_b2fill + s_cont + s_w2
+                   + s_load1 + s_w3 + s_b3fill + s_b3start + s_w4
+                   + s_load2 + s_w5 + s_filter;
+
+    StaticJsonDocument<768> doc;
+    doc["cpu_freq_mhz"] = getCpuFrequencyMhz();
+    doc["iters"] = N;
+    doc["block1_fill_16stores"] = (uint32_t)(s_b1fill/N);
+    doc["start_block1"] = (uint32_t)(s_start/N);
+    doc["block2_fill_16stores"] = (uint32_t)(s_b2fill/N);
+    doc["wait1_block1_compute"] = (uint32_t)(s_w1/N);
+    doc["continue_block2"] = (uint32_t)(s_cont/N);
+    doc["wait2_block2_compute"] = (uint32_t)(s_w2/N);
+    doc["load1"] = (uint32_t)(s_load1/N);
+    doc["wait3_load1"] = (uint32_t)(s_w3/N);
+    doc["block3_fill_2stores_B1"] = (uint32_t)(s_b3fill/N);
+    doc["start_block3"] = (uint32_t)(s_b3start/N);
+    doc["wait4_block3_compute"] = (uint32_t)(s_w4/N);
+    doc["load2"] = (uint32_t)(s_load2/N);
+    doc["wait5_load2"] = (uint32_t)(s_w5/N);
+    doc["filter_check"] = (uint32_t)(s_filter/N);
+    doc["total_per_nonce"] = (uint32_t)(total/N);
+    doc["khs_implied"] = (uint32_t)(240000000ull/(total/N)/1000);
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+#endif  // CONFIG_IDF_TARGET_ESP32
+
+#ifdef AXEHUB_HW_FAST
+// DMA microbench: compares esp_sha_dma() per-nonce cost against the manual
+// DPort path. 2-block DMA = double-SHA-256-d in one call. Returns avg/min
+// cyc/iter as JSON.
+static void handleShaMicrobenchDma(AsyncWebServerRequest* request) {
+    if (!checkCompatHeader(request)) { send404(request); return; }
+
+    auto rdcc = [](){ uint32_t c; __asm__ __volatile__("rsr.ccount %0":"=r"(c)); return c; };
+
+    static uint8_t input1[64]  __attribute__((aligned(16)));
+    static uint8_t input2[128] __attribute__((aligned(16)));
+    for (int i = 0; i < 64;  ++i) input1[i] = (uint8_t)(0xAA + i);
+    for (int i = 0; i < 128; ++i) input2[i] = (uint8_t)(0xBB + i);
+
+    esp_sha_acquire_hardware();
+
+    const uint32_t N = 100;
+
+    uint32_t min_first = 0xFFFFFFFF, sum_first = 0;
+    for (uint32_t i = 0; i < N; ++i) {
+        input1[60] = (uint8_t)i;
+        uint32_t t0 = rdcc();
+        esp_sha_dma(SHA2_256, input1, 64, NULL, 0, true);
+        uint32_t dt = rdcc() - t0;
+        sum_first += dt;
+        if (dt < min_first) min_first = dt;
+    }
+
+    uint32_t min_cont = 0xFFFFFFFF, sum_cont = 0;
+    for (uint32_t i = 0; i < N; ++i) {
+        input1[60] = (uint8_t)i;
+        uint32_t t0 = rdcc();
+        esp_sha_dma(SHA2_256, input1, 64, NULL, 0, false);
+        uint32_t dt = rdcc() - t0;
+        sum_cont += dt;
+        if (dt < min_cont) min_cont = dt;
+    }
+
+    uint32_t min_2blk = 0xFFFFFFFF, sum_2blk = 0;
+    for (uint32_t i = 0; i < N; ++i) {
+        input2[60] = (uint8_t)i;
+        uint32_t t0 = rdcc();
+        esp_sha_dma(SHA2_256, input2, 128, NULL, 0, true);
+        uint32_t dt = rdcc() - t0;
+        sum_2blk += dt;
+        if (dt < min_2blk) min_2blk = dt;
+    }
+
+    esp_sha_release_hardware();
+
+    StaticJsonDocument<384> doc;
+    doc["cpu_freq_mhz"] = getCpuFrequencyMhz();
+    doc["manual_dport_per_nonce_baseline"] = 681;
+    JsonObject f = doc.createNestedObject("dma_1block_first");
+    f["avg"] = sum_first/N;
+    f["min"] = min_first;
+    JsonObject c = doc.createNestedObject("dma_1block_continue");
+    c["avg"] = sum_cont/N;
+    c["min"] = min_cont;
+    JsonObject b = doc.createNestedObject("dma_2blocks");
+    b["avg"] = sum_2blk/N;
+    b["min"] = min_2blk;
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+#endif
 
 static void handleDisplayGet(AsyncWebServerRequest* request) {
     if (!checkCompatHeader(request)) { send404(request); return; }
@@ -924,11 +1365,9 @@ static void axehubServerTask(void*) {
     // Give WiFiManager's captive portal a beat to release port 80
     vTaskDelay(1000 / portTICK_PERIOD_MS);
 
-    // Force STA-only: WiFiManager leaves softAP active in non-blocking portal
-    // mode, which on S3 (lwIP esp-netif) traps the listen socket on the AP
-    // netif and rejects incoming SYN from STA with RST. Verified via
-    // self-connect (which routes via loopback) returning OK while external
-    // curl gets ECONNREFUSED.
+    // Force STA-only: WiFiManager's non-blocking portal leaves softAP active,
+    // which on S3 (lwIP esp-netif) traps the listen socket on the AP netif
+    // and rejects external SYN with RST.
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_STA);
     vTaskDelay(200 / portTICK_PERIOD_MS);
@@ -948,6 +1387,15 @@ static void axehubServerTask(void*) {
     s_server->on("/api/axehub/v1/system/restart", HTTP_POST, handleSystemRestart);
     s_server->on("/api/axehub/v1/system/reset_stats", HTTP_POST, handleSystemResetStats);
     s_server->on("/api/axehub/v1/wifi/reset",     HTTP_POST, handleWifiReset);
+#ifdef AXEHUB_HW_FAST
+    s_server->on("/api/axehub/v1/sha/canary",      HTTP_POST, handleShaCanary);
+    s_server->on("/api/axehub/v1/sha/bench_hw",    HTTP_POST, handleShaMicrobench);
+    s_server->on("/api/axehub/v1/sha/bench_dma",   HTTP_POST, handleShaMicrobenchDma);
+    s_server->on("/api/axehub/v1/sha/bench_phase", HTTP_POST, handleShaMicrobenchPhase);
+#endif
+#if defined(CONFIG_IDF_TARGET_ESP32) && defined(HARDWARE_SHA265)
+    s_server->on("/api/axehub/v1/sha/bench_phase_classic", HTTP_POST, handleShaMicrobenchPhaseClassic);
+#endif
 
     s_server->on("/api/axehub/v1/display", HTTP_GET, handleDisplayGet);
     auto* displayModeHandler = new AsyncCallbackJsonWebHandler("/api/axehub/v1/display/mode", handleDisplayMode);
@@ -996,11 +1444,8 @@ static void axehubServerTask(void*) {
 }
 
 void axehub_api_start() {
-    // Core 1: core 0 reserved for MinerHw which busy-waits SHA peripheral with
-    // prio 10 — AxehubAPI on core 0 with prio 1 gets starved on S3 (asm mining
-    // loop yields only on missing-job branch). Prio 1 here is fine on core 1
-    // because Monitor(5)/Stratum(4) preempt for their work and MinerSw(1) has
-    // vTaskDelay's of its own.
+    // Core 1: Core 0 is dedicated to busy-waiting MinerHw (prio 10) which
+    // would starve a low-prio HTTP task on S3.
     xTaskCreatePinnedToCore(axehubServerTask, "AxehubAPI", 4096, nullptr, 1, nullptr, 1);
 }
 

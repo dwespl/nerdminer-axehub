@@ -138,23 +138,25 @@ axehub_sha_asm_s3_mine_batch:
 
     beq     a11, a5, .Lexhausted
 
-    /* Restore midstate to H for next block-2 compute (CONTINUE) */
+    /* Restore midstate to H for next block-2 compute (CONTINUE).
+     * 2-wide load-store pattern: pairs of l32i + pairs of s32i so LX7 can
+     * dual-issue independent memory ops (separate L1 load/store ports). */
     l32i.n  a12, a2, 0
+    l32i.n  a13, a2, 4
     s32i.n  a12, a10, 0
-    l32i.n  a12, a2, 4
-    s32i.n  a12, a10, 4
+    s32i.n  a13, a10, 4
     l32i.n  a12, a2, 8
+    l32i.n  a13, a2, 12
     s32i.n  a12, a10, 8
-    l32i.n  a12, a2, 12
-    s32i.n  a12, a10, 12
+    s32i.n  a13, a10, 12
     l32i.n  a12, a2, 16
+    l32i.n  a13, a2, 20
     s32i.n  a12, a10, 16
-    l32i.n  a12, a2, 20
-    s32i.n  a12, a10, 20
+    s32i.n  a13, a10, 20
     l32i.n  a12, a2, 24
+    l32i.n  a13, a2, 28
     s32i.n  a12, a10, 24
-    l32i.n  a12, a2, 28
-    s32i.n  a12, a10, 28
+    s32i.n  a13, a10, 28
 
     s32i.n  a7, a8, 20                   /* SHA_CONTINUE */
 

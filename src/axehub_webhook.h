@@ -14,10 +14,8 @@ void axehub_webhook_start();
 //   { "event": "<type>", "device_mac": "...", "ts_ms": <millis>,
 //     "data": <payload-as-parsed-json> }
 //
-// to the URL configured in Settings.WebhookUrl. If the queue is full the
-// event is silently dropped (logged to Serial) so callers in hot paths
-// don't block. Safe to call before axehub_webhook_start() — the call will
-// simply no-op until the queue is alive.
+// to Settings.WebhookUrl. Drops silently if the queue is full; safe to
+// call before axehub_webhook_start() (no-op until queue is alive).
 void axehub_webhook_emit(const char* event_type, const String& payload_json);
 
 #else

@@ -43,6 +43,13 @@ uint32_t axehub_metrics_get_reject_total();       // cumulative across all reaso
 uint32_t axehub_metrics_get_accept_total();       // cumulative pool-accepted shares
 bool     axehub_metrics_get_pool_connected();
 
+// Pool-effective hashrate (kH/s) = accept_total * pool_diff * 2^32 / uptime_s.
+// Independent of device counters. Returns 0 when uptime_s == 0 or pool_diff <= 0.
+uint32_t axehub_metrics_get_pool_effective_khs(uint32_t uptime_s);
+
+// True once >=5 accepted shares — pool_effective_khs has acceptable variance.
+bool axehub_metrics_pool_effective_is_meaningful();
+
 #else  // AXEHUB_API_ENABLED — provide no-op shims so callers don't need ifdefs.
 
 inline void axehub_metrics_init() {}
@@ -59,6 +66,8 @@ inline void axehub_metrics_set_network_difficulty(double) {}
 inline void axehub_metrics_set_pool_connected(bool) {}
 inline void axehub_metrics_pool_send_marker() {}
 inline void axehub_metrics_pool_recv_marker() {}
+inline uint32_t axehub_metrics_get_pool_effective_khs(uint32_t) { return 0; }
+inline bool     axehub_metrics_pool_effective_is_meaningful() { return false; }
 
 #endif
 

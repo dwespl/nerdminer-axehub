@@ -29,7 +29,15 @@
 //#pragma GCC optimize ("tree-switch-conversion")
 //#pragma GCC optimize ("no-stack-check")
 
+#ifdef AXEHUB_SW_ASM_ROUNDS
+// LX6 funnel-shift rotate (ssai+src, 2 instr vs GCC's 3); n must be const.
+#define ROTR(x, n) ({ uint32_t _rotr_r; \
+    __asm__ __volatile__("ssai %1\n\tsrc %0, %2, %2" \
+        : "=r"(_rotr_r) : "i"(n), "r"((uint32_t)(x))); \
+    _rotr_r; })
+#else
 #define ROTR(x, n) ((x >> n) | (x << ((sizeof(x) << 3) - n)))
+#endif
 
 #ifndef PUT_UINT32_BE
 #define PUT_UINT32_BE(n, data, offset)                                                                                 \

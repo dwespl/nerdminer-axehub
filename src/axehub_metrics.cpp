@@ -258,6 +258,29 @@ uint32_t axehub_metrics_get_accept_total() {
     return v;
 }
 
+uint32_t axehub_metrics_get_pool_effective_khs(uint32_t uptime_s) {
+    if (uptime_s == 0) return 0;
+    lock();
+    const uint32_t acc  = s_accept_total;
+    const double   diff = s_pool_diff;
+    unlock();
+    if (acc == 0 || diff <= 0.0) return 0;
+    const double khs = (double)acc * diff * 4294967296.0 / (double)uptime_s / 1000.0;
+    if (khs <= 0.0) return 0;
+    if (khs > 0xFFFFFFFFu) return 0xFFFFFFFFu;
+    return (uint32_t)khs;
+}
+
+// Pool_eff has 1/sqrt(N) relative stdev — needs ~5+ accepted shares before
+// it's statistically meaningful for display. Below threshold, callers fall
+// back to per-worker (hw_khs+sw_khs).
+bool axehub_metrics_pool_effective_is_meaningful() {
+    lock();
+    const uint32_t acc = s_accept_total;
+    unlock();
+    return acc >= 5;
+}
+
 void axehub_metrics_set_pool_connected(bool c) {
     lock();
     bool was = s_pool_connected;

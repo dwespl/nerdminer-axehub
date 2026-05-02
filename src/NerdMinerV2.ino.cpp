@@ -24,6 +24,19 @@
 #include <soc/rtc.h>
 #endif
 
+#ifdef AXEHUB_OVERCLOCK_BBPLL_MULT
+extern "C" {
+  #include "regi2c_ctrl.h"
+}
+// Replicate the BBPLL register field ids (private_include in IDF, not on default
+// search path). These are stable across IDF versions, defined in regi2c_bbpll.h.
+#define I2C_BBPLL           0x66
+#define I2C_BBPLL_HOSTID    4
+#define I2C_BBPLL_OC_DIV_7_0     3
+#define I2C_BBPLL_OC_DIV_7_0_MSB 7
+#define I2C_BBPLL_OC_DIV_7_0_LSB 0
+#endif
+
 #ifdef TOUCH_ENABLE
 #include "TouchHandler.h"
 #endif
@@ -98,31 +111,23 @@ void setup()
 
 #ifdef AXEHUB_OVERCLOCK_MHZ
   /******** OVERCLOCK ATTEMPT *****/
-  // setCpuFrequencyMhz rejects anything outside 240/160/.../10 on ESP32-S3.
-  // Go direct: build a custom rtc_cpu_freq_config_t and hand it to
-  // rtc_clk_cpu_freq_set_config_fast, bypassing the freq-whitelist check.
-  // If the silicon can't actually run at the requested freq, the chip hangs
-  // and we reflash via bootloader button — no brick risk.
+  // setCpuFrequencyMhz has a freq whitelist; bypass via direct
+  // rtc_clk_cpu_freq_set_config. Hang on unsupported freq → reflash button.
   {
     Serial.printf("[AxeHub] Pre-overclock: %u MHz\n", (unsigned)getCpuFrequencyMhz());
     // Try first the regular API for completeness.
     bool oc_ok = setCpuFrequencyMhz(AXEHUB_OVERCLOCK_MHZ);
     if (!oc_ok) {
-      // Direct PLL reconfig. ESP32-S3's BBPLL supports 480 MHz by default;
-      // 320 MHz CPU would need BBPLL=320 (alternate config) with div=1, or
-      // BBPLL=480 with div=1.5 (not possible — divider is integer). For a
-      // ~280 MHz bump we'd need BBPLL=480 div=? still only 240 or 480.
-      // Realistic overclock target: 320 MHz via BBPLL=320 reconfigured.
+      // Full BBPLL reconfig (NOT _fast — _fast skips PLL reprogram and
+      // hangs at 480 MHz effective). For CPU=320: BBPLL=320 / div=1.
       rtc_cpu_freq_config_t conf;
       conf.source          = RTC_CPU_FREQ_SRC_PLL;
-      conf.source_freq_mhz = AXEHUB_OVERCLOCK_MHZ;   // tell the driver PLL IS at this freq
+      conf.source_freq_mhz = AXEHUB_OVERCLOCK_MHZ;
       conf.div             = 1;
       conf.freq_mhz        = AXEHUB_OVERCLOCK_MHZ;
-      Serial.println("[AxeHub] Attempting direct rtc_clk_cpu_freq_set_config_fast...");
+      Serial.println("[AxeHub] Attempting full rtc_clk_cpu_freq_set_config (BBPLL reprogram)...");
       Serial.flush();
-      rtc_clk_cpu_freq_set_config_fast(&conf);
-      // Note: this call may have reconfigured BBPLL to an unsupported freq,
-      // causing an immediate hang. If we reach the next line, we're alive.
+      rtc_clk_cpu_freq_set_config(&conf);
     }
     uint32_t oc_actual = getCpuFrequencyMhz();
     Serial.printf("[AxeHub] Post-overclock: actual=%u MHz (api_ok=%d)\n",
@@ -130,8 +135,31 @@ void setup()
   }
 #endif
 
+#ifdef AXEHUB_OVERCLOCK_BBPLL_MULT
+  /******** OVERCLOCK ATTEMPT 2 — BBPLL multiplier tweak via REGI2C *****/
+  // Bypass IDF freq whitelist: bump BBPLL feedback divider via I2C_BBPLL.
+  // Stock OC_DIV_7_0=32 → 240 MHz; +8 ≈ +30 MHz. Risk: WiFi/flash timings
+  // and silent SHA corruption — validate via pool accept_total ratio.
+  Serial.printf("[AxeHub] BBPLL multiplier tweak: writing OC_DIV_7_0=%u (stock=32)\n",
+                (unsigned)AXEHUB_OVERCLOCK_BBPLL_MULT);
+  Serial.flush();
+  REGI2C_WRITE_MASK(I2C_BBPLL, I2C_BBPLL_OC_DIV_7_0, AXEHUB_OVERCLOCK_BBPLL_MULT);
+  delay(10);  // let PLL relock
+  Serial.printf("[AxeHub] BBPLL multiplier applied. IDF reports CPU=%u MHz (actual is multiplied).\n",
+                (unsigned)getCpuFrequencyMhz());
+#endif
+
   /******** AXEHUB METRICS (mutex must exist before stratum/monitor tasks start) *****/
   axehub_metrics_init();
+
+#if defined(CONFIG_IDF_TARGET_ESP32) && defined(HARDWARE_SHA265)
+  // One-shot peripheral overlap probe — see mining.h for rationale.
+  // Output goes to Serial; verdict gates future overlap optimisations.
+  axehub_classic_overlap_canary();
+  // axehub_classic_h_state_probe() — A.3 EMPIRICALLY confirmed impossible
+  // 2026-04-29 EOD4. Peripheral H register has no MMIO write path (verified
+  // 0/7 offsets in 0xC0..0x300 range). Function kept for future re-test.
+#endif
 
   esp_task_wdt_init(WDT_MINER_TIMEOUT, true);
   // Idle task that would reset WDT never runs, because core 0 gets fully utilized
@@ -185,12 +213,8 @@ void setup()
   init_WifiManager();
 
 
-// ESP32 classic SHA TEXT-overlap canary disabled: same pattern of in-setup
-// SHA self-test corrupted lwIP routing on S3 (sessions silently RST'd on
-// external TCP). On classic devkit it triggers periodic hardware-style
-// resets (esp_reset_reason=POWERON) within seconds of mining startup.
-// Move to a deferred task post-stratum-stabilisation if we ever need the
-// answer; in production the unsafe path simply isn't taken.
+// In-setup SHA canary disabled: corrupts lwIP on S3 / triggers POWERON
+// resets on classic devkit. Move to deferred task if needed.
 
   /******** CREATE TASK TO PRINT SCREEN *****/
   //tft.pushImage(0, 0, MinerWidth, MinerHeight, MinerScreen);
@@ -247,9 +271,9 @@ void setup()
 #if (SOC_CPU_CORES_NUM >= 2)
   // SW miner on core 1 alongside Monitor + Stratum.
   #if defined(CONFIG_IDF_TARGET_ESP32)
-  xTaskCreatePinnedToCore(minerWorkerSw, "MinerSw-1", 5000, (void*)1, 1, &minerTask2, 1);
+  xTaskCreatePinnedToCore(minerWorkerSw, "MinerSw-1", 5000, (void*)1, 3, &minerTask2, 1);
   #else
-  xTaskCreatePinnedToCore(minerWorkerSw, "MinerSw-1", 6000, (void*)1, 1, &minerTask2, 1);
+  xTaskCreatePinnedToCore(minerWorkerSw, "MinerSw-1", 6000, (void*)1, 3, &minerTask2, 1);
   #endif
   esp_task_wdt_add(minerTask2);
 #endif

@@ -10,7 +10,13 @@
  * message schedule on stack (256 bytes). Scratch a4-a7.
  */
 
-#ifdef AXEHUB_HW_ASM_PURE   /* Build gate shared with the HW path */
+/* Gate: HW_ASM_PURE on S3 (where this lives alongside the HW SHA peripheral
+ * fast path), or SW_ASM_PURE on classic ESP32 (where it's the ONLY asm path —
+ * the HW SHA peripheral has its own driver, no asm overlap). All instructions
+ * used here are base Xtensa LX ISA available on both LX6 (classic) and LX7
+ * (S3); LX7-specific dual-issue scheduling is a microarchitectural perf hint,
+ * not a correctness requirement, so the same code runs correctly on LX6. */
+#if defined(AXEHUB_HW_ASM_PURE) || defined(AXEHUB_SW_ASM_PURE)
 
     .section .iram1.axehub_sha_sw_asm, "ax"
     .align 4
@@ -83,8 +89,8 @@
 /*
  * ------------------------------------------------------------------------
  * Ch(e, f, g) = g ^ (e & (f ^ g))       (3 ops)
- * Maj(a, b, c) = (a & b) | (c & (a | b)) (3 ops; actually `(a & b) ^ (a & c) ^ (b & c)` is 5)
- *   We use (a & b) | (c & (a | b)) — matches Blockstream Jade implementation.
+ * Maj(a, b, c) = (a & b) | (c & (a | b)) (3 ops; equivalent to the standard
+ *   FIPS 180-4 form `(a & b) ^ (a & c) ^ (b & c)` which needs 5 ops).
  * ------------------------------------------------------------------------
  */
 .macro CH dst e f g tmp
@@ -670,4 +676,4 @@ axehub_sha_sw_asm_compress_block2_reject:
     .literal .L_magic_32E7, 0x000032E7
     .literal .L_magic_a41f32e7, 0xA41F32E7
 
-#endif /* AXEHUB_HW_ASM_PURE */
+#endif /* AXEHUB_HW_ASM_PURE || AXEHUB_SW_ASM_PURE */

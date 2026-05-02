@@ -63,9 +63,11 @@ void ledDisplay_NoScreen(unsigned long mElapsed)
   Serial.printf(">>> Total MHashes: %s\n", data.totalMHashes.c_str());
   Serial.printf(">>> Time mining: %s\n", data.timeMining.c_str());
 #ifdef AXEHUB_API_ENABLED
-  Serial.printf(">>> hw_khs: %u  sw_khs: %u\n",
+  extern uint64_t upTime;
+  Serial.printf(">>> hw_khs: %u  sw_khs: %u  pool_eff: %u\n",
                 (unsigned)axehub_metrics_get_hw_khs(),
-                (unsigned)axehub_metrics_get_sw_khs());
+                (unsigned)axehub_metrics_get_sw_khs(),
+                (unsigned)axehub_metrics_get_pool_effective_khs((uint32_t)upTime));
 #endif
 }
 void ledDisplay_LoadingScreen(void)

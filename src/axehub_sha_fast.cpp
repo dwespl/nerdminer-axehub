@@ -90,13 +90,7 @@ bool IRAM_ATTR axehub_sha_fast_mine_batch(
         // Cooperative early-exit. Checked once per nonce — costs ~4 cycles.
         if (!*mining_active) break;
 
-        // memw discipline (verified by deep-research 2026-04-21):
-        //   * TEXT[i] writes are FIFO-ordered to the same MMIO region — no
-        //     memw needed between them
-        //   * memw IS needed before writes to MODE / CONTINUE / START (the
-        //     state-changing control registers) so the data writes are
-        //     visible to the peripheral before the trigger fires
-        //   * BUSY-poll naturally serialises the read with subsequent ops
+        // memw only before MODE/CONTINUE/START; TEXT writes are FIFO.
 
         // ---- PHASE A: Restore midstate to H[0..7] ----
         sha_h[0] = mid0;
@@ -1234,7 +1228,7 @@ void axehub_sha_hw_phase_microbench(void)
         while (sha_base[24/4]) ;
     }
 
-    Serial.printf("[uBenchHW-Phase] Per nonce avg cykli (N=%u):\n", N);
+    Serial.printf("[uBenchHW-Phase] Per nonce avg cyc (N=%u):\n", N);
     Serial.printf("  OVERLAP 1 (8 stores TEXT pad):    %u\n", (uint32_t)(s_overlap1/N));
     Serial.printf("  Wait 1 (block-2 hash done):       %u\n", (uint32_t)(s_wait1/N));
     Serial.printf("  Phase E  (H->TEXT, 16 ops):       %u\n", (uint32_t)(s_phaseE/N));
@@ -1245,7 +1239,7 @@ void axehub_sha_hw_phase_microbench(void)
     Serial.printf("  Phase A  (midstate->H, 8 stores): %u\n", (uint32_t)(s_phaseA/N));
     Serial.printf("  Trigger CONTINUE next nonce:      %u\n", (uint32_t)(s_trigC/N));
     uint64_t total = s_overlap1+s_wait1+s_phaseE+s_trig+s_overlap2+s_wait2+s_filter+s_phaseA+s_trigC;
-    Serial.printf("  TOTAL per nonce:                  %u cykli (= %u kH/s)\n",
+    Serial.printf("  TOTAL per nonce:                  %u cyc (= %u kH/s)\n",
                   (uint32_t)(total/N), (uint32_t)(240000000ull/(total/N)/1000));
     Serial.flush();
 }

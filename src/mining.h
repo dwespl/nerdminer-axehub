@@ -6,14 +6,10 @@
 #define MAX_NONCE_STEP  5000000U
 #define MAX_NONCE       25000000U
 #define TARGET_NONCE    471136297U
-// Pool's vardiff floor on most public/private pools is ~1. Suggesting below
-// the floor (e.g. 0.00015) gets ignored and pool clamps to its own default
-// (often a high value like 42), starving us of accepted shares. Suggest 1
-// so vardiff has a sane baseline and can scale us further down if it wants.
+// Most pools clamp suggested diff to their floor (~1); below that we get
+// starved of shares.
 #define DEFAULT_DIFFICULTY  1.0
-// Some pools (e.g. ckpool with short idle-timeout) drop the socket after
-// 10–15 s of silence. With low hashrate we may go hours between shares,
-// so a short keepalive is the only thing keeping the session alive.
+// Short keepalive — some pools drop the socket after 10–15 s of silence.
 #define KEEPALIVE_TIME_ms        5000
 #define POOLINACTIVITY_TIME_ms  60000
 
@@ -31,14 +27,20 @@ void runMiner(void *name);
 void minerWorkerSw(void * task_id);
 void minerWorkerHw(void * task_id);
 
+#if defined(CONFIG_IDF_TARGET_ESP32)
+// Boot canary: TEXT-overlap safety probe (logs SAFE/UNSAFE to Serial).
+void axehub_classic_overlap_canary(void);
+
+// Empirical probe: does peripheral H register survive across block-3 START?
+void axehub_classic_h_state_probe(void);
+#endif
+
 String printLocalTime(void);
 
 void resetStat();
 
-// Signals the stratum worker to drop the current pool socket and reconnect
-// with whatever is currently in Settings (primary or fallback, whichever is
-// active). Safe to call from any task — just flips flags, the stratum loop
-// notices on its next iteration.
+// Drop current pool socket and reconnect with current Settings. Safe from
+// any task — flips flags; stratum loop picks up on next iteration.
 void mining_invalidate_pool_connection();
 bool mining_is_using_fallback();
 
