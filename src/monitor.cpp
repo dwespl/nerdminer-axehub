@@ -1,16 +1,34 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include "mbedtls/md.h"
 #include "HTTPClient.h"
 #include <NTPClient.h>
 #include <WiFiUdp.h>
 #include <list>
+
+static WiFiClientSecure s_https_client;
+static bool axehub_http_begin(HTTPClient& http, const String& url, uint16_t handshakeSec = 3) {
+    if (url.startsWith("https://")) {
+        s_https_client.setInsecure();
+        s_https_client.setHandshakeTimeout(handshakeSec);
+        return http.begin(s_https_client, url);
+    }
+    return http.begin(url);
+}
+
+static TaskHandle_t s_axehubFetchTaskHandle = nullptr;
+static inline bool axehub_in_fetch_task() {
+    return s_axehubFetchTaskHandle != nullptr &&
+           xTaskGetCurrentTaskHandle() == s_axehubFetchTaskHandle;
+}
 #include "mining.h"
 #include "utils.h"
 #include "monitor.h"
 #include "drivers/storage/storage.h"
 #include "drivers/devices/device.h"
 #include "axehub_metrics.h"
+#include "axehub_price_history.h"
 
 extern uint32_t templates;
 extern uint32_t hashes;
@@ -100,6 +118,11 @@ static const char* coinPriceJsonKey() {
 }
 
 
+static void axehubNetworkFetchTask(void*);
+String getBlockHeight(void);
+String getBTCprice(void);
+void   updateGlobalData(void);
+
 void setup_monitor(void){
     /******** TIME ZONE SETTING *****/
 
@@ -114,12 +137,34 @@ void setup_monitor(void){
     poolAPIUrl = getPoolAPIUrl();
     Serial.println("poolAPIUrl: " + poolAPIUrl);
 #endif
+
+    xTaskCreatePinnedToCore(axehubNetworkFetchTask, "AxhFetch", 8192,
+                            nullptr, 11, &s_axehubFetchTaskHandle, 0);
+}
+
+static void axehubNetworkFetchTask(void*) {
+    while (WiFi.status() != WL_CONNECTED) {
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+    }
+    vTaskDelay(2000 / portTICK_PERIOD_MS);
+
+    for (;;) {
+        getBlockHeight();
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+        getBTCprice();
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+        updateGlobalData();
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+        axehub_price_history_tick();
+       vTaskDelay(5000 / portTICK_PERIOD_MS);
+    }
 }
 
 unsigned long mGlobalUpdate =0;
 
 void updateGlobalData(void){
-    
+   if (!axehub_in_fetch_task()) return;
+
     if((mGlobalUpdate == 0) || (millis() - mGlobalUpdate > UPDATE_Global_min * 60 * 1000)){
 
         if (WiFi.status() != WL_CONNECTED) return;
@@ -128,10 +173,11 @@ void updateGlobalData(void){
         if (ghUrl.length() == 0) { mGlobalUpdate = millis(); return; }   // BC2 / custom with no URL
 
         HTTPClient http;
+        http.setConnectTimeout(6000);
         http.setTimeout(6000);
         Serial.printf("[Global] GET %s\n", ghUrl.c_str());
         try {
-        http.begin(ghUrl);
+        axehub_http_begin(http, ghUrl);
         int httpCode = http.GET();
         Serial.printf("[Global] HTTP %d\n", httpCode);
 
@@ -212,7 +258,7 @@ void updateGlobalData(void){
 
 
         //Make third API call to get fees
-        http.begin(getFees);
+        axehub_http_begin(http, String(getFees));
         httpCode = http.GET();
 
         if (httpCode == HTTP_CODE_OK) {
@@ -244,7 +290,10 @@ void updateGlobalData(void){
 unsigned long mHeightUpdate = 0;
 
 String getBlockHeight(void){
-    
+    // Monitor / screen callers get the cached value only — actual TLS
+    // fetch happens on the dedicated fetch task to keep the screen alive.
+    if (!axehub_in_fetch_task()) return current_block;
+
     if((mHeightUpdate == 0) || (millis() - mHeightUpdate > UPDATE_Height_min * 60 * 1000)){
 
         if (WiFi.status() != WL_CONNECTED) return current_block;
@@ -257,10 +306,12 @@ String getBlockHeight(void){
         }
 
         HTTPClient http;
+        http.setConnectTimeout(8000);
         http.setTimeout(10000);
+        mHeightUpdate = millis();
         Serial.printf("[Height] GET %s\n", hUrl.c_str());
         try {
-        http.begin(hUrl);
+        axehub_http_begin(http, hUrl);
         int httpCode = http.GET();
         Serial.printf("[Height] HTTP %d\n", httpCode);
 
@@ -270,8 +321,6 @@ String getBlockHeight(void){
             Serial.printf("[Height] payload: '%s'\n", payload.c_str());
 
             current_block = payload;
-
-            mHeightUpdate = millis();
         }
         http.end();
         } catch(...) {
@@ -286,9 +335,15 @@ String getBlockHeight(void){
 unsigned long mBTCUpdate = 0;
 
 String getBTCprice(void){
-    
+    if (!axehub_in_fetch_task()) {
+        static char price_buffer[16];
+        if (bitcoin_price >= 1.0) snprintf(price_buffer, sizeof(price_buffer), "$%u", (unsigned int)bitcoin_price);
+        else                      snprintf(price_buffer, sizeof(price_buffer), "$%.3f", bitcoin_price);
+        return String(price_buffer);
+    }
+
     if((mBTCUpdate == 0) || (millis() - mBTCUpdate > UPDATE_BTC_min * 60 * 1000)){
-    
+
         if (WiFi.status() != WL_CONNECTED) {
             static char price_buffer[16];
             if (bitcoin_price >= 1.0) snprintf(price_buffer, sizeof(price_buffer), "$%u", (unsigned int)bitcoin_price);
@@ -306,12 +361,14 @@ String getBTCprice(void){
         }
 
         HTTPClient http;
+        http.setConnectTimeout(8000);
         http.setTimeout(10000);
         bool priceUpdated = false;
+        mBTCUpdate = millis();
 
         Serial.printf("[Price] GET %s\n", pUrl.c_str());
         try {
-        http.begin(pUrl);
+        axehub_http_begin(http, pUrl);
         int httpCode = http.GET();
         Serial.printf("[Price] HTTP %d\n", httpCode);
 

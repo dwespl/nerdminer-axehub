@@ -3,6 +3,7 @@
 #include "axehub_api.h"
 #include "axehub_metrics.h"
 #include "axehub_webhook.h"
+#include "axehub_price_history.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -1213,6 +1214,7 @@ static void handleCoinSet(AsyncWebServerRequest* request, JsonVariant& json) {
     current_block    = "0";
     gData.globalHash = "";
     gData.difficulty = "";
+    axehub_price_history_reset();
 
     StaticJsonDocument<384> doc;
     doc["status"] = "ok";
@@ -1362,15 +1364,14 @@ static void axehubServerTask(void*) {
     while (WiFi.status() != WL_CONNECTED) {
         vTaskDelay(500 / portTICK_PERIOD_MS);
     }
-    // Give WiFiManager's captive portal a beat to release port 80
+    // Give WiFiManager's captive portal a beat to release port 80.
     vTaskDelay(1000 / portTICK_PERIOD_MS);
 
-    // Force STA-only: WiFiManager's non-blocking portal leaves softAP active,
-    // which on S3 (lwIP esp-netif) traps the listen socket on the AP netif
-    // and rejects external SYN with RST.
-    WiFi.softAPdisconnect(true);
-    WiFi.mode(WIFI_STA);
-    vTaskDelay(200 / portTICK_PERIOD_MS);
+    if (WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA) {
+        WiFi.softAPdisconnect(true);
+        WiFi.mode(WIFI_STA);
+        vTaskDelay(200 / portTICK_PERIOD_MS);
+    }
 
     s_server = new AsyncWebServer(AXEHUB_PORT);
     s_server->on("/api/axehub/v1/ping", HTTP_GET, handlePing);
@@ -1444,9 +1445,7 @@ static void axehubServerTask(void*) {
 }
 
 void axehub_api_start() {
-    // Core 1: Core 0 is dedicated to busy-waiting MinerHw (prio 10) which
-    // would starve a low-prio HTTP task on S3.
-    xTaskCreatePinnedToCore(axehubServerTask, "AxehubAPI", 4096, nullptr, 1, nullptr, 1);
+    xTaskCreatePinnedToCore(axehubServerTask, "AxehubAPI", 8192, nullptr, 4, nullptr, 1);
 }
 
 #endif
