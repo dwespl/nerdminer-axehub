@@ -11,7 +11,9 @@ display drivers, …) are modified only with thin hooks needed to wire
 those in. Future upstream rebases will likely need manual conflict
 resolution at those hook points.
 
-![axehub solo BC2 miner — AXEHUB_DISPLAY layout running on a CYD 2.8" board](images/axehub/firmware-cyd28-bc2.jpg)
+| Miner | Network | TimeChart |
+|---|---|---|
+| ![Miner screen — current hashrate, uptime, pool / local best diff, workers, accepted shares](images/axehub/firmware-cyd28-bc2.jpg) | ![Network screen — coin price, NTP time, block height, halving / retarget countdown, network hashrate + difficulty](images/axehub/firmware-cyd28-network.jpg) | ![TimeChart screen — local clock + date, 24h price sparkline with min / max overlays and 24h delta %](images/axehub/firmware-cyd28-timechart.jpg) |
 
 ## What this fork adds
 
