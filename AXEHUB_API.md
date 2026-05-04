@@ -50,7 +50,7 @@ Full telemetry snapshot. Returns a large JSON with device/pool/hashrate/firmware
 Top-level keys:
 - `firmware` — name, version, axehub_compat, features, sw_worker_path
 - `device` — mac, hostname, board, chip
-- `hashing` — current/average 1m/5m kH/s, hw/sw split, shares_accepted/rejected, reject_reasons, best_diff, valid_blocks
+- `hashing` — current/average 1m/5m kH/s, hw/sw split, **pool_effective_khs**, shares_accepted/rejected, reject_reasons, best_diff, **best_session_diff**, valid_blocks
 - `pool` — `primary` + `fallback` (url, port, user, active, last_ping_ms, difficulty)
 - `hardware` — temp_board_c, heap_free_bytes, uptime_s, wifi_rssi_dbm, cpu_freq_mhz, last_reset_reason
 - `display` — tft_present, current_mode, available_modes, brightness_pct, auto_sleep_enabled/_start_hour/_end_hour, **invert_colors**
@@ -93,6 +93,14 @@ For unknown pools it falls back to local on-device statistics.
 ### `POST /system/restart`
 
 Reboots the device after ~800 ms. Returns `200 ok` before rebooting.
+
+### `POST /system/reset_stats`
+
+Wipes mining statistics in NVS (uptime, total Mhashes, shares accepted,
+session best diff, etc.) and reboots after ~800 ms. Returns `200 ok` before
+rebooting. Use to start a clean baseline measurement run.
+
+No body.
 
 ### `POST /wifi/reset`
 

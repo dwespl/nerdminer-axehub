@@ -24,7 +24,7 @@ Endpoints include:
 - `/coin` — switch chain (`BTC` / `BC2` (BitcoinII) pre-configured, plus `custom` with per-endpoint URL overrides for any SHA-256 fork)
 - `/display/{mode,brightness,sleep_window}` — cycle screens, dim TFT, schedule nightly backlight off
 - `/buzzer/{test,tone}` — identify a board in a rack, custom alerts
-- `/system/restart` + `/wifi/reset` — soft reboot + reprovisioning escape hatch
+- `/system/restart` + `/system/reset_stats` + `/wifi/reset` — soft reboot, NVS stats wipe, reprovisioning escape hatch
 - `/webhook/set` — outbound push for boot / pool connect / share-above-threshold / block-found events
 
 **`AXEHUB_DISPLAY`** — alternative TFT layout for CYD ESP32-2432S028R / S024
