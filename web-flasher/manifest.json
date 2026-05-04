@@ -11,6 +11,15 @@
       "notes": "Native USB CDC. Use the USB port (not UART). Hold BOOT during reset if it doesn't enter bootloader mode."
     },
     {
+      "id": "NerdminerV2-S3-GEEK",
+      "name": "Waveshare ESP32-S3-GEEK (1.14\" ST7789)",
+      "chip": "ESP32-S3",
+      "factory_bin": "firmware/NerdminerV2-S3-GEEK_factory.bin",
+      "factory_offset": "0x0",
+      "flash_size": "16MB",
+      "notes": "Native USB CDC. Mining + AxeHub HTTP API enabled; built-in 1.14\" 240x135 ST7789 uses upstream display (the AxeHub 3-screen layout is CYD-only for now)."
+    },
+    {
       "id": "ESP32-2432S028R",
       "name": "Sunton ESP32-2432S028R (CYD 2.8\")",
       "chip": "ESP32",
