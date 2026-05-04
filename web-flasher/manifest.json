@@ -38,6 +38,15 @@
       "notes": "ILI9341_2 driver, TFT_BL=GPIO27, capacitive touch (CST816S, not yet supported)."
     },
     {
+      "id": "M5Stick-C-Plus2",
+      "name": "M5Stack M5StickC Plus 2 (1.14\" ST7789v2)",
+      "chip": "ESP32",
+      "factory_bin": "firmware/M5Stick-C-Plus2_factory.bin",
+      "factory_offset": "0x0",
+      "flash_size": "8MB",
+      "notes": "ESP32-PICO-V3-02 with built-in 1.14\" 240x135 ST7789v2, battery, 2 buttons. Mining + AxeHub HTTP API + pipelined HW SHA enabled; built-in display uses upstream M5 driver (the AxeHub 3-screen layout is CYD-only for now)."
+    },
+    {
       "id": "esp32cam",
       "name": "AI-Thinker ESP32-CAM",
       "chip": "ESP32",
