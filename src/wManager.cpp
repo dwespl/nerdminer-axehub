@@ -311,12 +311,13 @@ void init_WifiManager()
   {
     strcat(checkboxParams2, " checked");
   }
-  // Default value mirrors the persisted setting. Hard-coding "T" here makes
-  // the post-autoConnect read paths overwrite the loaded value with true on
-  // every boot — so users with reverse-polarity panels who unchecked the
-  // box could never actually disable inversion.
-  const char* invertDefaultVal = Settings.invertColors ? "T" : "";
-  WiFiManagerParameter invertColors("inverColors", "Invert Display Colors (if the colors looks weird)", invertDefaultVal, 2, checkboxParams2, WFM_LABEL_AFTER);
+  // Value attribute MUST stay "T" so the browser sends a non-empty string
+  // when the checkbox is submitted (HTML checkboxes serialise as
+  // `name=<value>` only when checked). The visual checked state is driven
+  // by the "checked" attribute appended into checkboxParams2 above —
+  // mirroring the persisted setting there preserves the saved choice
+  // across the form re-render.
+  WiFiManagerParameter invertColors("inverColors", "Invert Display Colors (if the colors looks weird)", "T", 2, checkboxParams2, WFM_LABEL_AFTER);
   wm.addParameter(&invertColors);
   #endif
   #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB) || defined(ESP32_2432S024)
@@ -436,17 +437,21 @@ void init_WifiManager()
         Serial.print("TimeZone fromUTC: ");
         Serial.println(Settings.Timezone);
 
-        #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB) || defined(ESP32_2432S024)
-        Settings.invertColors = (strncmp(invertColors.getValue(), "T", 1) == 0);
-        Serial.print("Invert Colors: ");
-        Serial.println(Settings.invertColors);        
-        #endif
-
-        #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB) || defined(ESP32_2432S024)
-        Settings.Brightness = atoi(brightness_text_box_num.getValue());
-        Serial.print("Brightness: ");
-        Serial.println(Settings.Brightness);
-        #endif
+        // Only consume the WiFiManager param widgets when the user actually
+        // submitted the captive-portal form. Without this guard, every boot
+        // (the autoConnect-success path runs unconditionally) reads the
+        // widget's constructor default ("T") and forces invertColors=true
+        // in memory, masking the saved NVS state.
+        if (shouldSaveConfig) {
+            #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB) || defined(ESP32_2432S024)
+            Settings.invertColors = (strncmp(invertColors.getValue(), "T", 1) == 0);
+            Serial.print("Invert Colors: ");
+            Serial.println(Settings.invertColors);
+            Settings.Brightness = atoi(brightness_text_box_num.getValue());
+            Serial.print("Brightness: ");
+            Serial.println(Settings.Brightness);
+            #endif
+        }
 
     }
 
@@ -478,18 +483,22 @@ void init_WifiManager()
     Serial.print("TimeZone fromUTC: ");
     Serial.println(Settings.Timezone);
 
-    #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB) || defined(ESP32_2432S024)
-    Settings.invertColors = (strncmp(invertColors.getValue(), "T", 1) == 0);
-    Serial.print("Invert Colors: ");
-    Serial.println(Settings.invertColors);
-    #endif
-
     // Save the custom parameters to FS
     if (shouldSaveConfig)
     {
-        nvMem.saveConfig(&Settings);
         #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB) || defined(ESP32_2432S024)
-         if (Settings.invertColors) ESP.restart();                
+        Settings.invertColors = (strncmp(invertColors.getValue(), "T", 1) == 0);
+        Serial.print("Invert Colors: ");
+        Serial.println(Settings.invertColors);
+        #endif
+        nvMem.saveConfig(&Settings);
+        // Apply the new invertColors immediately rather than restart-on-true
+        // — restarting only when invertColors flipped to true (the previous
+        // pattern) silently dropped the unchecked-checkbox case, leaving
+        // users unable to disable inversion through the captive portal.
+        #ifdef AXEHUB_DISPLAY
+        extern void axehubCyd_ApplyInvertColors(void);
+        axehubCyd_ApplyInvertColors();
         #endif
         #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB) || defined(ESP32_2432S024)
         if (Settings.Brightness != 250) ESP.restart();
