@@ -13,6 +13,7 @@
 #include "monitor.h"
 #include "drivers/displays/display.h"
 #include "drivers/storage/SDCard.h"
+#include "drivers/storage/nvMemory.h"
 #include "ShaTests/nerdSHA_HWTest.h"
 #include "timeconst.h"
 #include "axehub_api.h"
@@ -193,6 +194,15 @@ void setup()
 
   /******** INIT NERDMINER ************/
   Serial.println("NerdMiner v2 starting......");
+
+  // Load persisted settings BEFORE initDisplay so display init reads the
+  // user-saved invertColors value. Without this, axehubCyd_Init runs with
+  // the struct default (false) and the WiFi-portal checkbox toggle has no
+  // visible effect — Settings only get loaded later inside init_WifiManager
+  // which runs after the display has already been configured.
+  extern nvMemory nvMem;
+  extern TSettings Settings;
+  nvMem.loadConfig(&Settings);
 
   /******** INIT DISPLAY ************/
   initDisplay();
