@@ -56,10 +56,10 @@ warm-up.
 
 | Board                     | Chip       | Pool-effective |
 |---------------------------|------------|----------------|
-| CYD 2.4 (ESP32-2432S024)  | ESP32-D0   | **~560 kH/s**  |
-| CYD 2.8 (ESP32-2432S028R) | ESP32-D0   | **~500 kH/s**  |
-| ESP32-CAM                 | ESP32-D0   | **~380 kH/s**  |
-| ESP32-S3 (DevKitC N16R8)  | ESP32-S3R8 | **~360 kH/s**  |
+| ESP32-CAM                 | ESP32-D0   | **~670 kH/s**  |
+| CYD 2.8 (ESP32-2432S028R) | ESP32-D0   | **~670 kH/s**  |
+| CYD 2.4 (ESP32-2432S024)  | ESP32-D0   | **~670 kH/s**  |
+| ESP32-S3 (DevKitC N16R8)  | ESP32-S3R8 | **~350 kH/s**  |
 
 ## Quick start
 
