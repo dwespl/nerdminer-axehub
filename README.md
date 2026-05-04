@@ -28,8 +28,15 @@ Endpoints include:
 - `/webhook/set` — outbound push for boot / pool connect / share-above-threshold / block-found events
 
 **`AXEHUB_DISPLAY`** — alternative TFT layout for CYD ESP32-2432S028R / S024
-boards (ILI9341 320×240), optimized for at-a-glance status (vs. the upstream
-multi-screen rotation).
+boards (ILI9341 320×240) with three touch-cyclable screens:
+
+- **Miner** — current hashrate, uptime, pool best / local best diff, workers, accepted shares
+- **Network** — coin price, NTP time, block height, halving / retarget countdown, network hashrate + difficulty
+- **TimeChart** — local clock + date, 24h price sparkline (coloured per-segment by trend) with min / max overlays and 24h delta %
+
+Coin-aware: rendering and data sources follow the active `axhCoinTicker`
+(`BTC` / `BC2` / `custom`). Screen index can be cycled by tapping the right
+or left half of the screen, or set explicitly through the API.
 
 **Pool fallback** — automatic failover when the primary pool stops
 responding. Configured via the HTTP API or via any client that speaks it.
