@@ -56,10 +56,26 @@
     border-radius: 6px; margin-bottom: 1rem; color: #ffdf76;
   }
   code { background: #21262d; padding: 0.1rem 0.3rem; border-radius: 3px; }
+  .titlebar {
+    display: flex; align-items: baseline; justify-content: space-between;
+    flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem;
+  }
+  .titlebar h1 { margin: 0; }
+  .titlebar a {
+    font-size: 0.85rem; color: #58a6ff; text-decoration: none;
+    border: 1px solid #30363d; padding: 0.25rem 0.6rem; border-radius: 4px;
+    white-space: nowrap;
+  }
+  .titlebar a:hover { background: #21262d; }
 </style>
 </head>
 <body>
-<h1>NerdMiner Web Flasher — AxeHub Edition</h1>
+<div class="titlebar">
+  <h1>NerdMiner Web Flasher — AxeHub Edition</h1>
+  <a href="https://github.com/dwespl/nerdminer-axehub" target="_blank" rel="noopener">
+    source on GitHub ↗
+  </a>
+</div>
 
 <div class="warn">
   <strong>Requirements:</strong> Chrome / Edge / Opera (Web Serial API). Firefox and Safari are NOT supported.
