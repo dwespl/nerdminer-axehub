@@ -34,6 +34,8 @@ DisplayDriver *currentDisplayDriver = &dongleDisplayDriver;
 
 #if defined(AXEHUB_DISPLAY) && (defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB))
 DisplayDriver *currentDisplayDriver = &axehubCydDriver;
+#elif defined(AXEHUB_DISPLAY) && defined(M5STICK_C_PLUS2)
+DisplayDriver *currentDisplayDriver = &axehubM5Driver;
 #else
 #ifdef ESP32_2432S028R
 DisplayDriver *currentDisplayDriver = &esp32_2432S028RDriver;

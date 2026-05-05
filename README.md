@@ -29,16 +29,20 @@ Endpoints include:
 - `/system/restart` + `/system/reset_stats` + `/wifi/reset` — soft reboot, NVS stats wipe, reprovisioning escape hatch
 - `/webhook/set` — outbound push for boot / pool connect / share-above-threshold / block-found events
 
-**`AXEHUB_DISPLAY`** — alternative TFT layout for CYD ESP32-2432S028R / S024
-boards (ILI9341 320×240) with three touch-cyclable screens:
+**`AXEHUB_DISPLAY`** — alternative TFT layout with three cyclable screens:
 
 - **Miner** — current hashrate, uptime, pool best / local best diff, workers, accepted shares
 - **Network** — coin price, NTP time, block height, halving / retarget countdown, network hashrate + difficulty
 - **TimeChart** — local clock + date, 24h price sparkline (coloured per-segment by trend) with min / max overlays and 24h delta %
 
+Two driver variants share the same screens and data plumbing:
+
+- **CYD ESP32-2432S028R / S024** (ILI9341 320×240) — touch-cyclable, full-detail layout
+- **M5StickC Plus 2** (ST7789v2 240×135) — button-cyclable (BtnA), compact layout for the small screen (Network drops `Difficulty` for space, still available via API)
+
 Coin-aware: rendering and data sources follow the active `axhCoinTicker`
-(`BTC` / `BC2` / `custom`). Screen index can be cycled by tapping the right
-or left half of the screen, or set explicitly through the API.
+(`BTC` / `BC2` / `custom`). Screen index can be cycled via touch / button or
+set explicitly through the API.
 
 **Pool fallback** — automatic failover when the primary pool stops
 responding. Configured via the HTTP API or via any client that speaks it.
@@ -61,6 +65,7 @@ warm-up.
 | ESP32-CAM                 | ESP32-D0   | **~670 kH/s**  |
 | CYD 2.8 (ESP32-2432S028R) | ESP32-D0   | **~670 kH/s**  |
 | CYD 2.4 (ESP32-2432S024)  | ESP32-D0   | **~670 kH/s**  |
+| M5StickC Plus 2           | ESP32-PICO | **~660 kH/s**  |
 | ESP32-S3 (DevKitC N16R8)  | ESP32-S3R8 | **~350 kH/s**  |
 
 ## Quick start
@@ -71,8 +76,9 @@ cd nerdminer-axehub
 # the AXEHUB_* flags are already enabled in platformio.ini for the
 # included envs — pick the one matching your board:
 pio run -e ESP32-2432S028R     # CYD 2.8" — display + touch verified, primary target
-pio run -e ESP32-S3-devKitv1   # ESP32-S3 N16R8 — verified, no display
 pio run -e ESP32-2432S024      # CYD 2.4" — display verified, touch only on XPT2046 variant
+pio run -e M5Stick-C-Plus2     # M5StickC Plus 2 — display verified, BtnA cycles screens
+pio run -e ESP32-S3-devKitv1   # ESP32-S3 N16R8 — verified, no display
 pio run -e esp32cam            # ESP32-CAM — API only (no display)
 
 # then build + flash (always pass -e — without it PIO builds every env):

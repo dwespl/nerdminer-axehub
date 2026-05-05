@@ -1,6 +1,6 @@
 #include "displayDriver.h"
 
-#ifdef AXEHUB_DISPLAY
+#if defined(AXEHUB_DISPLAY) && (defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB))
 
 #include <Arduino.h>
 #include <WiFi.h>

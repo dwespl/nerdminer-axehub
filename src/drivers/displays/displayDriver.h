@@ -45,6 +45,7 @@ extern DisplayDriver t_hmiDisplayDriver;
 extern DisplayDriver sp_kcDisplayDriver;
 #ifdef AXEHUB_DISPLAY
 extern DisplayDriver axehubCydDriver;
+extern DisplayDriver axehubM5Driver;
 #endif
 
 #define SCREENS_ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
